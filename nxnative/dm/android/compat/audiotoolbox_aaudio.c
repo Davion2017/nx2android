@@ -1,0 +1,94 @@
+// Android port: an AudioUnit output unit on AAudio (dm/android/compat/include/AudioToolbox/AudioToolbox.h).
+// The stream asks for low latency and the unit's own format (interleaved 16-bit or float PCM at its rate and channel count); AAudio's data callback
+// calls the unit's render callback with one AudioBuffer over AAudio's buffer, so the host's pull code (hle_audio.c pull_device) is unchanged.
+// A stream that disconnects (headphones unplugged, another app taking exclusive audio) stops calling back; the host's watchdog then retries the start,
+// which opens a new stream.
+#include <AudioToolbox/AudioToolbox.h>
+#include <aaudio/AAudio.h>
+#include <android/log.h>
+#include <stdatomic.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+struct dm_audio_component { int unused; };
+struct dm_audio_unit {
+    AudioStreamBasicDescription fmt; int have_fmt;
+    AURenderCallbackStruct cb;
+    int32_t frames_hint;
+    AAudioStream *st;
+    _Atomic uint64_t sample_time;
+};
+static struct dm_audio_component g_output;
+
+AudioComponent AudioComponentFindNext(AudioComponent after, const AudioComponentDescription *d) {
+    return !after && d && d->componentType == kAudioUnitType_Output ? &g_output : NULL;
+}
+OSStatus AudioComponentInstanceNew(AudioComponent c, AudioComponentInstance *out) {
+    if (c != &g_output) return kAudio_UnimplementedError;
+    *out = calloc(1, sizeof **out); return *out ? noErr : -1;
+}
+OSStatus AudioUnitSetProperty(AudioUnit u, AudioUnitPropertyID id, AudioUnitScope scope, AudioUnitElement el, const void *data, UInt32 size) {
+    (void)scope; (void)el;
+    switch (id) {
+    case kAudioUnitProperty_StreamFormat:
+        if (size < sizeof u->fmt) return -50;
+        memcpy(&u->fmt, data, sizeof u->fmt);
+        if (u->fmt.mFormatID != kAudioFormatLinearPCM || (u->fmt.mFormatFlags & kAudioFormatFlagIsNonInterleaved)) return kAudioUnitErr_FormatNotSupported;
+        if (!(u->fmt.mFormatFlags & kAudioFormatFlagIsFloat) && u->fmt.mBitsPerChannel != 16) return kAudioUnitErr_FormatNotSupported;
+        u->have_fmt = 1; return noErr;
+    case kAudioUnitProperty_SetRenderCallback: if (size < sizeof u->cb) return -50; memcpy(&u->cb, data, sizeof u->cb); return noErr;
+    case kAudioDevicePropertyBufferFrameSize: if (size >= 4) u->frames_hint = (int32_t)*(const UInt32 *)data; return noErr;
+    default: return noErr;
+    }
+}
+OSStatus AudioUnitInitialize(AudioUnit u) { return u->have_fmt && u->cb.inputProc ? noErr : -50; }
+
+static aaudio_data_callback_result_t on_data(AAudioStream *st, void *ud, void *audio, int32_t frames) {
+    AudioUnit u = ud;
+    AudioBufferList bl = {1, {{u->fmt.mChannelsPerFrame, (UInt32)frames * u->fmt.mBytesPerFrame, audio}}};
+    AudioUnitRenderActionFlags fl = 0;
+    struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
+    AudioTimeStamp ts = {.mSampleTime = (Float64)atomic_fetch_add(&u->sample_time, (uint64_t)frames), .mHostTime = (UInt64)t.tv_sec * 1000000000ull + (UInt64)t.tv_nsec};
+    if (u->cb.inputProc(u->cb.inputProcRefCon, &fl, &ts, 0, (UInt32)frames, &bl)) memset(audio, 0, (size_t)frames * u->fmt.mBytesPerFrame);
+    (void)st; return AAUDIO_CALLBACK_RESULT_CONTINUE;
+}
+static void on_error(AAudioStream *st, void *ud, aaudio_result_t err) {
+    (void)st; (void)ud; __android_log_print(ANDROID_LOG_WARN, "dmhost", "AAudio stream error %d (%s): the host's watchdog restarts it", err, AAudio_convertResultToText(err));
+}
+static void close_stream(AudioUnit u) { if (u->st) { AAudioStream_requestStop(u->st); AAudioStream_close(u->st); u->st = NULL; } }
+
+OSStatus AudioOutputUnitStart(AudioUnit u) {
+    close_stream(u);   // a start after a stall (the watchdog's retry) opens a fresh stream
+    AAudioStreamBuilder *b; aaudio_result_t r = AAudio_createStreamBuilder(&b);
+    if (r != AAUDIO_OK) return r;
+    AAudioStreamBuilder_setDirection(b, AAUDIO_DIRECTION_OUTPUT);
+    AAudioStreamBuilder_setSampleRate(b, (int32_t)u->fmt.mSampleRate);
+    AAudioStreamBuilder_setChannelCount(b, (int32_t)u->fmt.mChannelsPerFrame);
+    AAudioStreamBuilder_setFormat(b, u->fmt.mFormatFlags & kAudioFormatFlagIsFloat ? AAUDIO_FORMAT_PCM_FLOAT : AAUDIO_FORMAT_PCM_I16);
+    AAudioStreamBuilder_setPerformanceMode(b, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+    AAudioStreamBuilder_setSharingMode(b, AAUDIO_SHARING_MODE_SHARED);
+    AAudioStreamBuilder_setUsage(b, AAUDIO_USAGE_GAME);
+    AAudioStreamBuilder_setContentType(b, AAUDIO_CONTENT_TYPE_MUSIC);
+    if (u->frames_hint > 0) AAudioStreamBuilder_setFramesPerDataCallback(b, u->frames_hint);
+    AAudioStreamBuilder_setDataCallback(b, on_data, u);
+    AAudioStreamBuilder_setErrorCallback(b, on_error, u);
+    r = AAudioStreamBuilder_openStream(b, &u->st);
+    AAudioStreamBuilder_delete(b);
+    if (r != AAUDIO_OK) { u->st = NULL; return r; }
+    // the device's own rate and channel count must be ours: AAudio converts when they differ (it reports the requested format back)
+    r = AAudioStream_requestStart(u->st);
+    if (r != AAUDIO_OK) { close_stream(u); return r; }
+    return noErr;
+}
+OSStatus AudioOutputUnitStop(AudioUnit u) { close_stream(u); return noErr; }
+OSStatus AudioUnitUninitialize(AudioUnit u) { close_stream(u); return noErr; }
+OSStatus AudioComponentInstanceDispose(AudioComponentInstance u) { if (u) { close_stream(u); free(u); } return noErr; }
+
+// ---- AudioConverter: not available yet (AAC through MediaCodec is a later step) ----
+OSStatus AudioConverterNew(const AudioStreamBasicDescription *in, const AudioStreamBasicDescription *out, AudioConverterRef *c) { (void)in; (void)out; *c = NULL; return kAudio_UnimplementedError; }
+OSStatus AudioConverterSetProperty(AudioConverterRef c, AudioConverterPropertyID id, UInt32 size, const void *data) { (void)c; (void)id; (void)size; (void)data; return kAudio_UnimplementedError; }
+OSStatus AudioConverterFillComplexBuffer(AudioConverterRef c, AudioConverterComplexInputDataProc proc, void *ref, UInt32 *packets, AudioBufferList *out, AudioStreamPacketDescription *desc) {
+    (void)c; (void)proc; (void)ref; (void)out; (void)desc; if (packets) *packets = 0; return kAudio_UnimplementedError;
+}
+OSStatus AudioConverterDispose(AudioConverterRef c) { (void)c; return noErr; }

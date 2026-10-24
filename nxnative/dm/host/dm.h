@@ -11,6 +11,23 @@
 #define LOG(...) do { fprintf(stderr, "[dm] " __VA_ARGS__); fputc('\n', stderr); } while (0)
 #define die(...) do { LOG("FATAL " __VA_ARGS__); abort(); } while (0)
 
+// Object-format differences for inline assembly and registration tables (Android port: ELF instead of Mach-O).
+// DM_ASM_SYM(name): a C symbol as assembly names it; DM_ASM_PAGE / DM_ASM_PAGEOFF: the adrp / add operands for its address; DM_ASM_PRIVATE: a global symbol
+// kept inside the image. DM_SECTION(name): a registration table section, found again by getsectiondata (on ELF the linker bounds it with __start_ / __stop_ symbols)
+#if defined(__APPLE__)
+#define DM_ASM_SYM(n) "_" n
+#define DM_ASM_PAGE(n) "_" n "@PAGE"
+#define DM_ASM_PAGEOFF(n) "_" n "@PAGEOFF"
+#define DM_ASM_PRIVATE ".private_extern"
+#define DM_SECTION(s) section("__DATA," s)
+#else
+#define DM_ASM_SYM(n) n
+#define DM_ASM_PAGE(n) n
+#define DM_ASM_PAGEOFF(n) ":lo12:" n
+#define DM_ASM_PRIVATE ".hidden"
+#define DM_SECTION(s) section(s), retain
+#endif
+
 typedef struct { uint32_t st_name; uint8_t st_info, st_other; uint16_t st_shndx; uint64_t st_value, st_size; } Elf64_Sym;
 typedef struct { int64_t d_tag; union { uint64_t d_val, d_ptr; } d_un; } Elf64_Dyn;
 typedef struct { uint64_t r_offset, r_info; int64_t r_addend; } Elf64_Rela;
@@ -55,6 +72,15 @@ extern int g_nmod;
 static inline const char *dm_main_build(void) { for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) return g_mod[i].build_id; return ""; }
 // Four thread-local slots: K18 = the Switch's x18, KTLS = tpidr_el0, KTLR = tpidrro_el0 (ThreadLocalRegion), KGATE = host gate entry; the actual key numbers are written into the key page by the loader
 extern pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate;
+// The guest thread slots the rewritten code reads (patch_nso.py emit_tp): Darwin TSD keys on Apple; on Android the keys are indices into a per-thread
+// block whose address bionic's TLS_SLOT_APP holds (tpidr_el0[2]), see loader.c
+#if defined(__APPLE__)
+#define dm_tsd_set(k, v) pthread_setspecific((k), (v))
+#define dm_tsd_get(k) pthread_getspecific(k)
+#else
+void dm_tsd_set(pthread_key_t k, const void *v);
+void *dm_tsd_get(pthread_key_t k);
+#endif
 
 void load_modules(const char *dir, const char **names, int n);
 void run_module_inits(void);

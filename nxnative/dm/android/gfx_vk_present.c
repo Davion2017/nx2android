@@ -1,0 +1,490 @@
+// Android port, Vulkan backend: presentation (see gfx_vk.h).
+// With a window (the app's ANativeWindow, dm_front_window): the game's swap chain texture is scaled into a Vulkan swapchain image (aspect kept, black borders) and
+// presented with FIFO (vsync) pacing. Headless (dmhost from adb shell): frames are counted, and DM_VK_SHOT=n1,n2,... writes those presented frames as PPM files to
+// DM_VK_SHOT_DIR (default DM_ROOT), which is how a run without a screen is checked.
+#include "gfx_vk.h"
+#include <android/native_window.h>
+#include <string.h>
+#include <math.h>
+#include <time.h>
+#include "overlay_layout.h"
+#include "font5x7.h"
+#include "overlay_vert.spv.h"
+#include "overlay_frag.spv.h"
+
+__attribute__((weak)) ANativeWindow *dm_front_window(void) { return NULL; }
+static uint64_t g_presents; static double g_pres_t[64];
+static VkSurfaceKHR g_surf; static VkSwapchainKHR g_swap; static VkImage g_simg[8]; static uint32_t g_nsimg; static VkExtent2D g_sext; static VkFormat g_sfmt;
+static VkSemaphore g_acq[8], g_done_sem[8]; static VkFence g_pfence[8]; static VkCommandPool g_ppool; static VkCommandBuffer g_pcb[8]; static uint32_t g_pi;
+static ANativeWindow *g_win;
+static VkImageView g_sview[8];
+__attribute__((weak)) int dm_overlay_visible(void) { return 0; }
+__attribute__((weak)) float dm_overlay_scale(void) { return 1; }
+__attribute__((weak)) void dm_overlay_knob(int stick, float *dx, float *dy) { (void)stick; *dx = *dy = 0; }
+__attribute__((weak)) int64_t dm_overlay_pressed(int ctl, uint64_t bit) { (void)ctl; (void)bit; return 0; }
+__attribute__((weak)) int dm_menu_state(void) { return -1; }
+static void swap_destroy(void) {
+    if (g_swap) { vkDeviceWaitIdle(V.dev); for (uint32_t i = 0; i < g_nsimg; i++) if (g_sview[i]) { vkDestroyImageView(V.dev, g_sview[i], NULL); g_sview[i] = VK_NULL_HANDLE; }
+                  vkDestroySwapchainKHR(V.dev, g_swap, NULL); g_swap = VK_NULL_HANDLE; }
+    if (g_surf) { vkDestroySurfaceKHR(V.inst, g_surf, NULL); g_surf = VK_NULL_HANDLE; }
+}
+static int swap_make(void) {
+    ANativeWindow *w = dm_front_window();
+    if (w != g_win) { swap_destroy(); g_win = w; }
+    if (!w) return 0;
+    if (g_swap) return 1;
+    VkAndroidSurfaceCreateInfoKHR si = {VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR, NULL, 0, w};
+    if (vkCreateAndroidSurfaceKHR(V.inst, &si, NULL, &g_surf)) return 0;
+    VkSurfaceCapabilitiesKHR caps; vkGetPhysicalDeviceSurfaceCapabilitiesKHR(V.pd, g_surf, &caps);
+    uint32_t nf = 0; vkGetPhysicalDeviceSurfaceFormatsKHR(V.pd, g_surf, &nf, NULL); VkSurfaceFormatKHR sf[32]; if (nf > 32) nf = 32; vkGetPhysicalDeviceSurfaceFormatsKHR(V.pd, g_surf, &nf, sf);
+    g_sfmt = sf[0].format; for (uint32_t i = 0; i < nf; i++) if (sf[i].format == VK_FORMAT_R8G8B8A8_UNORM) g_sfmt = sf[i].format;
+    g_sext = (VkExtent2D){(uint32_t)ANativeWindow_getWidth(w), (uint32_t)ANativeWindow_getHeight(w)};   // the window as it is now; Android's compositor rotates (identity transform)
+    if (!g_sext.width || !g_sext.height) g_sext = caps.currentExtent;
+    uint32_t n = caps.minImageCount < 3 ? 3 : caps.minImageCount; if (caps.maxImageCount && n > caps.maxImageCount) n = caps.maxImageCount;
+    VkSwapchainCreateInfoKHR ci = {VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, NULL, 0, g_surf, n, g_sfmt, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR, g_sext, 1,
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+        (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR) ? VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR : VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, VK_PRESENT_MODE_FIFO_KHR, 1, VK_NULL_HANDLE};
+    VkResult r = vkCreateSwapchainKHR(V.dev, &ci, NULL, &g_swap);
+    if (r) { VKLOG("[RED] swapchain creation failed: %d", r); swap_destroy(); return 0; }
+    g_nsimg = 8; vkGetSwapchainImagesKHR(V.dev, g_swap, &g_nsimg, g_simg);
+    for (uint32_t i = 0; i < g_nsimg; i++) { VkImageViewCreateInfo vi = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, NULL, 0, g_simg[i], VK_IMAGE_VIEW_TYPE_2D, g_sfmt, {0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        VKCHK(vkCreateImageView(V.dev, &vi, NULL, &g_sview[i])); }
+    if (!g_ppool) {
+        VkCommandPoolCreateInfo pci = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, NULL, VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, V.qf}; VKCHK(vkCreateCommandPool(V.dev, &pci, NULL, &g_ppool));
+        VkCommandBufferAllocateInfo ai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, NULL, g_ppool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 8}; VKCHK(vkAllocateCommandBuffers(V.dev, &ai, g_pcb));
+        for (int i = 0; i < 8; i++) {
+            VkSemaphoreCreateInfo s = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO}; VKCHK(vkCreateSemaphore(V.dev, &s, NULL, &g_acq[i])); VKCHK(vkCreateSemaphore(V.dev, &s, NULL, &g_done_sem[i]));
+            VkFenceCreateInfo f = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, VK_FENCE_CREATE_SIGNALED_BIT}; VKCHK(vkCreateFence(V.dev, &f, NULL, &g_pfence[i]));
+        }
+    }
+    VKLOG("swapchain %ux%u format %d, %u images", g_sext.width, g_sext.height, g_sfmt, g_nsimg);
+    return 1;
+}
+static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImageLayout to) {
+    VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT, from, to,
+        VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, img, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+}
+// ---- the on-screen gamepad: rasterized on the CPU once per window size (half resolution), blended over each frame ----
+// The texture is the static layer (w x h), a strip of sprites under it (sh rows) and the pause menu's panel under that (pw x ph). The sprites: each stick's
+// knob, drawn every frame where the finger holds it; the menu button, drawn on its own at OV_MENU_ALPHA whether the gamepad is shown or not; a white disc, the
+// glow over a pressed button; a black block, the dimming behind the menu. sp: each sprite in the strip (centre x, y and radius, texels; r 0 = none). The
+// panel is rasterized again whenever the menu's state (dm_menu_state) changes.
+enum { SP_DISC = OV_N, SP_BLACK, SP_N };
+static struct { VkImage img; VkDeviceMemory mem; VkImageView view; VkSampler samp; VkDescriptorSetLayout dsl; VkPipelineLayout layout; VkDescriptorPool pool; VkDescriptorSet set;
+                VkPipeline pipe; VkFormat pfmt; uint32_t w, h, sh, pw, ph; VkBuffer up; VkDeviceMemory upm; uint8_t *px; int uploaded, panel; float sp[SP_N][3]; } g_ov;
+static uint32_t ov_layout_sprites(uint32_t h) {   // places the sprites, returns the strip's height
+    float x = 4, top = (float)h, mr = 0, disc = 0;
+    for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_BUTTON && ov_r(&OV_CTLS[i]) * h > disc) disc = ov_r(&OV_CTLS[i]) * h;
+    for (int i = 0; i < SP_N; i++) {
+        const ov_ctl *c = i < OV_N ? &OV_CTLS[i] : NULL;
+        float r = !c ? (i == SP_DISC ? disc : 6) : c->kind == OV_STICK_L || c->kind == OV_STICK_R ? ov_r(c) * OV_KNOB * h : c->kind == OV_MENU ? ov_r(c) * h : 0;
+        g_ov.sp[i][2] = r; if (!r) continue; g_ov.sp[i][0] = x + r + 2; x += 2 * r + 8; if (r > mr) mr = r;
+    }
+    for (int i = 0; i < SP_N; i++) g_ov.sp[i][1] = top + mr + 4;
+    return (uint32_t)(2 * mr + 8);
+}
+static void ov_plot(uint8_t *px, uint32_t w, uint32_t h, int x, int y, uint8_t a, uint8_t v) {
+    if (x < 0 || y < 0 || (uint32_t)x >= w || (uint32_t)y >= h) return;
+    uint8_t *p = px + 4 * ((size_t)y * w + (size_t)x); if (p[3] >= a) return;
+    p[0] = p[1] = p[2] = v; p[3] = a;
+}
+static void ov_circle(uint8_t *px, uint32_t w, uint32_t h, float cx, float cy, float r, float ring) {
+    for (int y = (int)(cy - r - 2); y <= (int)(cy + r + 2); y++) for (int x = (int)(cx - r - 2); x <= (int)(cx + r + 2); x++) {
+        float d = sqrtf((x - cx) * (x - cx) + (y - cy) * (y - cy));
+        if (d <= r && d >= r - ring) ov_plot(px, w, h, x, y, 150, 255);   // the ring
+        else if (d < r - ring) ov_plot(px, w, h, x, y, 50, 30);           // a dark, see-through inside
+    }
+}
+static void ov_text(uint8_t *px, uint32_t w, uint32_t h, float cx, float cy, const char *s, int scale) {
+    int n = (int)strlen(s), x0 = (int)(cx - n * 6 * scale / 2.0f), y0 = (int)(cy - 7 * scale / 2.0f);
+    for (int i = 0; i < n; i++) {
+        unsigned c = (unsigned char)s[i]; const unsigned char *g = FONT5X7[(c >= 32 && c < 127 ? c : 63) - 32];
+        for (int col = 0; col < 5; col++) for (int row = 0; row < 7; row++) if (g[col] >> row & 1)
+            for (int dy = 0; dy < scale; dy++) for (int dx = 0; dx < scale; dx++) ov_plot(px, w, h, x0 + i * 6 * scale + col * scale + dx, y0 + row * scale + dy, 220, 255);
+    }
+}
+// colour drawing for the menu button and the panel: straight alpha, "over" blending, shapes antialiased by their distance
+typedef struct { uint8_t *px; uint32_t stride, x0, y0, w, h; } ov_canvas;   // a w x h window of rows `stride` texels wide, at (x0, y0)
+static void cv_blend(const ov_canvas *cv, int x, int y, const uint8_t c[4], float cov) {
+    if (x < 0 || y < 0 || (uint32_t)x >= cv->w || (uint32_t)y >= cv->h || cov <= 0) return;
+    uint8_t *p = cv->px + 4 * ((size_t)(cv->y0 + y) * cv->stride + cv->x0 + x);
+    float a = c[3] / 255.0f * (cov > 1 ? 1 : cov), da = p[3] / 255.0f, oa = a + da * (1 - a);
+    if (oa <= 0) return;
+    for (int k = 0; k < 3; k++) p[k] = (uint8_t)((c[k] * a + p[k] * da * (1 - a)) / oa + 0.5f);
+    p[3] = (uint8_t)(oa * 255 + 0.5f);
+}
+static void cv_rrect(const ov_canvas *cv, float x0, float y0, float x1, float y1, float rad, const uint8_t c[4]) {   // a filled rounded rectangle
+    float cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, hx = (x1 - x0) / 2 - rad, hy = (y1 - y0) / 2 - rad;
+    for (int y = (int)y0 - 1; y <= (int)y1 + 1; y++) for (int x = (int)x0 - 1; x <= (int)x1 + 1; x++) {
+        float qx = fabsf(x + 0.5f - cx) - hx, qy = fabsf(y + 0.5f - cy) - hy, ox = qx > 0 ? qx : 0, oy = qy > 0 ? qy : 0;
+        float d = sqrtf(ox * ox + oy * oy) + fminf(fmaxf(qx, qy), 0) - rad;
+        cv_blend(cv, x, y, c, 0.5f - d);
+    }
+}
+static void cv_disc(const ov_canvas *cv, float cx, float cy, float r, const uint8_t c[4]) { cv_rrect(cv, cx - r, cy - r, cx + r, cy + r, r, c); }
+static void cv_ring(const ov_canvas *cv, float cx, float cy, float r, float t, const uint8_t c[4]) {
+    for (int y = (int)(cy - r) - 1; y <= (int)(cy + r) + 1; y++) for (int x = (int)(cx - r) - 1; x <= (int)(cx + r) + 1; x++) {
+        float d = sqrtf((x + 0.5f - cx) * (x + 0.5f - cx) + (y + 0.5f - cy) * (y + 0.5f - cy));
+        cv_blend(cv, x, y, c, fminf(0.5f - (d - r), 0.5f + (d - (r - t))));
+    }
+}
+static float cv_text_w(const char *s, int scale) { return (float)strlen(s) * 6 * scale - scale; }
+static void cv_text(const ov_canvas *cv, float x, float cy, const char *s, int scale, const uint8_t c[4]) {   // x: the left edge
+    int x0 = (int)(x + 0.5f), y0 = (int)(cy - 7 * scale / 2.0f + 0.5f);
+    for (int i = 0; s[i]; i++) {
+        unsigned ch = (unsigned char)s[i]; const unsigned char *g = FONT5X7[(ch >= 32 && ch < 127 ? ch : 63) - 32];
+        for (int col = 0; col < 5; col++) for (int row = 0; row < 7; row++) if (g[col] >> row & 1)
+            for (int dy = 0; dy < scale; dy++) for (int dx = 0; dx < scale; dx++) cv_blend(cv, x0 + i * 6 * scale + col * scale + dx, y0 + row * scale + dy, c, 1);
+    }
+}
+static const uint8_t C_WHITE[4] = {255, 255, 255, 255}, C_ACCENT[4] = {255, 60, 142, 255};
+static void ov_menu_icon(const ov_canvas *cv, float cx, float cy, float r) {   // the menu button: a dark disc with a ring and three bars
+    static const uint8_t fill[4] = {20, 20, 26, 170}, ring[4] = {255, 255, 255, 210};
+    cv_disc(cv, cx, cy, r, fill); cv_ring(cv, cx, cy, r, fmaxf(2, r * 0.07f), ring);
+    float bw = r * 0.50f, bt = fmaxf(2, r * 0.11f), gap = r * 0.30f;
+    for (int k = -1; k <= 1; k++) cv_rrect(cv, cx - bw, cy + k * gap - bt / 2, cx + bw, cy + k * gap + bt / 2, bt / 2, C_WHITE);
+}
+static void ov_panel(int st) {   // the pause menu, for menu state st (dm_menu_state), into the panel's rows of the upload buffer
+    ov_canvas cv = {g_ov.px, g_ov.w, 0, g_ov.h + g_ov.sh, g_ov.pw, g_ov.ph};
+    for (uint32_t y = 0; y < g_ov.ph; y++) memset(g_ov.px + 4 * ((size_t)(cv.y0 + y) * g_ov.w), 0, (size_t)g_ov.pw * 4);
+    float W = (float)g_ov.pw, u = (float)g_ov.ph / ((OVM_N + 1) * OV_MENU_ROW + 2 * OV_MENU_PAD), pad = OV_MENU_PAD * u, rh = OV_MENU_ROW * u;
+    static const uint8_t bg[4] = {14, 14, 20, 236}, line[4] = {255, 255, 255, 40}, hi[4] = {255, 255, 255, 34}, dim[4] = {200, 200, 210, 255}, off[4] = {80, 80, 92, 255}, knob_off[4] = {215, 215, 222, 255};
+    cv_rrect(&cv, 0, 0, W, (float)g_ov.ph, rh * 0.18f, bg);
+    int ts = (int)fmaxf(2, roundf(rh * 0.30f / 7)), is = (int)fmaxf(2, roundf(rh * 0.22f / 7));
+    float ty = pad + rh / 2; cv_text(&cv, (W - cv_text_w("PAUSED", ts)) / 2, ty, "PAUSED", ts, C_WHITE);
+    cv_rrect(&cv, pad, pad + rh - 1, W - pad, pad + rh, 0.5f, line);
+    static const char *labels[OVM_N] = {"Controller overlay", "Rumble", "Mode", "Resume"};
+    int sel = (st >> 4 & 15) - 1;
+    for (int i = 0; i < OVM_N; i++) {
+        float y0 = pad + (i + 1) * rh, cy = y0 + rh / 2;
+        if (i == sel) cv_rrect(&cv, pad * 0.6f, y0 + rh * 0.08f, W - pad * 0.6f, y0 + rh * 0.92f, rh * 0.14f, hi);
+        if (i == OVM_RESUME) { cv_text(&cv, (W - cv_text_w(labels[i], is)) / 2, cy, labels[i], is, C_ACCENT); continue; }
+        cv_text(&cv, pad * 1.6f, cy, labels[i], is, i == sel ? C_WHITE : dim);
+        if (i == OVM_MODE) {   // two segments, the current one filled: Performance (handheld) | Resolution (docked)
+            static const char *seg[2] = {"Performance", "Resolution"}; int docked = st >> 2 & 1;
+            float sh = rh * 0.46f, sw = fmaxf(cv_text_w(seg[0], is), cv_text_w(seg[1], is)) + sh, x1 = W - pad * 1.6f, x0 = x1 - 2 * sw;
+            cv_rrect(&cv, x0, cy - sh / 2, x1, cy + sh / 2, sh / 2, off);
+            cv_rrect(&cv, x0 + docked * sw, cy - sh / 2, x0 + (docked + 1) * sw, cy + sh / 2, sh / 2, C_ACCENT);
+            for (int k = 0; k < 2; k++) cv_text(&cv, x0 + k * sw + (sw - cv_text_w(seg[k], is)) / 2, cy, seg[k], is, k == docked ? C_WHITE : dim);
+            continue;
+        }
+        int on = st >> (i == OVM_OVERLAY ? 0 : 1) & 1; float sh = rh * 0.40f, sw = sh * 1.85f, sx1 = W - pad * 1.6f, sx0 = sx1 - sw;   // the switch
+        cv_rrect(&cv, sx0, cy - sh / 2, sx1, cy + sh / 2, sh / 2, on ? C_ACCENT : off);
+        cv_disc(&cv, on ? sx1 - sh / 2 : sx0 + sh / 2, cy, sh / 2 - fmaxf(2, sh * 0.1f), on ? C_WHITE : knob_off);
+        const char *word = on ? "ON" : "OFF"; cv_text(&cv, sx0 - sh * 0.4f - cv_text_w(word, is), cy, word, is, on ? C_WHITE : dim);
+    }
+}
+static void ov_raster(uint8_t *px, uint32_t w, uint32_t h, uint32_t sh) {
+    memset(px, 0, (size_t)w * (h + sh) * 4);
+    float H = (float)h; int ts = h > 600 ? 3 : 2;
+    for (int i = 0; i < OV_N; i++) {
+        const ov_ctl *c = &OV_CTLS[i]; float cx = c->x * w, cy = c->y * h, r = ov_r(c) * H;
+        if (c->kind == OV_MENU) continue;   // a sprite only
+        if (c->kind == OV_DPAD) {
+            for (int k = 0; k < 4; k++) { float ox, oy, dr; ov_dpad_dir(k, &ox, &oy, &dr); ov_circle(px, w, h, cx + ox * r, cy + oy * r, dr * r, 2.5f); }
+            continue;
+        }
+        ov_circle(px, w, h, cx, cy, r, c->kind == OV_BUTTON ? 2.5f : 3.0f);
+        if (c->label[0]) ov_text(px, w, h, cx, cy, c->label, ts);
+    }
+    ov_canvas strip = {px, w, 0, 0, w, h + sh};
+    for (int i = 0; i < SP_N; i++) {   // the sprites (the knobs are drawn only as sprites, where the finger has them)
+        float x = g_ov.sp[i][0], y = g_ov.sp[i][1], r = g_ov.sp[i][2]; if (!r) continue;
+        if (i == SP_DISC) cv_disc(&strip, x, y, r, C_WHITE);
+        else if (i == SP_BLACK) { static const uint8_t k[4] = {0, 0, 0, 255}; cv_rrect(&strip, x - r, y - r, x + r, y + r, 0, k); }
+        else if (OV_CTLS[i].kind == OV_MENU) ov_menu_icon(&strip, x, y, r);
+        else ov_circle(px, w, h + sh, x, y, r, 2.5f);
+    }
+}
+typedef struct { float pos[4], uv[4], alpha; } ov_quad;
+static void ov_draw(VkCommandBuffer cb, const ov_quad *q) { vkCmdPushConstants(cb, g_ov.layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof *q, q); vkCmdDraw(cb, 6, 1, 0, 0); }
+static void ov_rect(VkCommandBuffer cb, float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1, float alpha) {   // screen pixels, texels
+    float W = (float)g_sext.width, H = (float)g_sext.height, tw = (float)g_ov.w, th = (float)(g_ov.h + g_ov.sh + g_ov.ph);
+    ov_quad q = {{x0 / W * 2 - 1, y0 / H * 2 - 1, x1 / W * 2 - 1, y1 / H * 2 - 1}, {u0 / tw, v0 / th, u1 / tw, v1 / th}, alpha}; ov_draw(cb, &q);
+}
+static void ov_sprite(VkCommandBuffer cb, int i, float sx, float sy, float r, float alpha) {   // sprite i centred on screen pixel (sx, sy), r screen pixels in radius
+    float k = r / g_ov.sp[i][2], hs = g_ov.sp[i][2] + 3;
+    ov_rect(cb, sx - hs * k, sy - hs * k, sx + hs * k, sy + hs * k, g_ov.sp[i][0] - hs, g_ov.sp[i][1] - hs, g_ov.sp[i][0] + hs, g_ov.sp[i][1] + hs, alpha);
+}
+static float ov_glow(int64_t t, int64_t now) {   // a held button's glow: bright at the press, fading to a steady one
+    if (!t) return 0;
+    float f = (float)(now - t) / OV_FLASH_NS; return f >= 1 ? 0.22f : 0.22f + 0.48f * (1 - f) * (1 - f);
+}
+static void ov_render(VkCommandBuffer cb, int mode, int menu) {
+    float W = (float)g_sext.width, H = (float)g_sext.height;
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); int64_t now = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+    if (menu >= 0) {   // paused: the frame dimmed, the panel, and the menu button (which closes it)
+        float bx = g_ov.sp[SP_BLACK][0], by = g_ov.sp[SP_BLACK][1];
+        ov_rect(cb, 0, 0, W, H, bx - 2, by - 2, bx + 2, by + 2, 0.55f);
+        float r[4]; ov_menu_rect(W, H, r);
+        ov_rect(cb, r[0], r[1], r[0] + r[2], r[1] + r[3], 0, (float)(g_ov.h + g_ov.sh), (float)g_ov.pw, (float)(g_ov.h + g_ov.sh + g_ov.ph), 1);
+    } else if (mode == 1) {
+        ov_rect(cb, 0, 0, W, H, 0, 0, (float)g_ov.w, (float)g_ov.h, 1);
+        for (int i = 0; i < OV_N; i++) { const ov_ctl *c = &OV_CTLS[i]; float cr = ov_r(c) * H;
+            if (c->kind == OV_STICK_L || c->kind == OV_STICK_R) {
+                float dx, dy; dm_overlay_knob(c->kind == OV_STICK_R, &dx, &dy); float travel = cr * (1 - OV_KNOB);   // the knob's edge reaches the ring
+                ov_sprite(cb, i, c->x * W + dx * travel, c->y * H + dy * travel, cr * OV_KNOB, 1);
+            } else if (c->kind == OV_BUTTON) { float g = ov_glow(dm_overlay_pressed(i, 0), now); if (g > 0) ov_sprite(cb, SP_DISC, c->x * W, c->y * H, cr * 0.93f, g); }
+            else if (c->kind == OV_DPAD) for (int k = 0; k < 4; k++) {
+                float g = ov_glow(dm_overlay_pressed(i, OV_DPAD_BITS[k]), now), ox, oy, dr; if (g <= 0) continue;
+                ov_dpad_dir(k, &ox, &oy, &dr); ov_sprite(cb, SP_DISC, c->x * W + ox * cr, c->y * H + oy * cr, dr * cr * 0.93f, g);
+            }
+        }
+    }
+    for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_MENU) {   // the menu button, on top of everything
+        const ov_ctl *c = &OV_CTLS[i]; float cr = ov_r(c) * H, g = ov_glow(dm_overlay_pressed(i, 0), now);
+        ov_sprite(cb, i, c->x * W, c->y * H, cr, OV_MENU_ALPHA);
+        if (g > 0) ov_sprite(cb, SP_DISC, c->x * W, c->y * H, cr * 0.93f, g);
+    }
+}
+static int overlay_ready(VkCommandBuffer cb, uint32_t k, int menu) {   // k: this present's slot (its fence is not signalled yet)
+    uint32_t w = g_sext.width / 2, h = g_sext.height / 2;
+    if (!g_ov.dsl) {
+        VkDescriptorSetLayoutBinding b = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
+        VkDescriptorSetLayoutCreateInfo li = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &b}; VKCHK(vkCreateDescriptorSetLayout(V.dev, &li, NULL, &g_ov.dsl));
+        VkPushConstantRange pr = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ov_quad)};
+        VkPipelineLayoutCreateInfo pl = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, NULL, 0, 1, &g_ov.dsl, 1, &pr}; VKCHK(vkCreatePipelineLayout(V.dev, &pl, NULL, &g_ov.layout));
+        VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}; VkDescriptorPoolCreateInfo pi = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, NULL, 0, 1, 1, &ps};
+        VKCHK(vkCreateDescriptorPool(V.dev, &pi, NULL, &g_ov.pool));
+        VkDescriptorSetAllocateInfo ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, NULL, g_ov.pool, 1, &g_ov.dsl}; VKCHK(vkAllocateDescriptorSets(V.dev, &ai, &g_ov.set));
+        VkSamplerCreateInfo si = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, NULL, 0, VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST,
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
+        VKCHK(vkCreateSampler(V.dev, &si, NULL, &g_ov.samp));
+    }
+    if (g_ov.pfmt != g_sfmt) {   // the pipeline renders into the swapchain's format
+        VkShaderModule vm, fm;
+        VkShaderModuleCreateInfo vc = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, sizeof overlay_vert_spv, overlay_vert_spv}; VKCHK(vkCreateShaderModule(V.dev, &vc, NULL, &vm));
+        VkShaderModuleCreateInfo fc = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, sizeof overlay_frag_spv, overlay_frag_spv}; VKCHK(vkCreateShaderModule(V.dev, &fc, NULL, &fm));
+        VkPipelineShaderStageCreateInfo ss[2] = {{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_VERTEX_BIT, vm, "main", NULL},
+                                                {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fm, "main", NULL}};
+        VkPipelineVertexInputStateCreateInfo vi = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineInputAssemblyStateCreateInfo ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, NULL, 0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 0};
+        VkPipelineViewportStateCreateInfo vs = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, NULL, 0, 1, NULL, 1, NULL};
+        VkPipelineRasterizationStateCreateInfo rs = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, NULL, 0, 0, 0, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE, 0, 0, 0, 0, 1};
+        VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, NULL, 0, VK_SAMPLE_COUNT_1_BIT};
+        VkPipelineColorBlendAttachmentState ba = {1, VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD, VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE, VK_BLEND_OP_ADD, 0xf};
+        VkPipelineColorBlendStateCreateInfo cbs = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, NULL, 0, 0, 0, 1, &ba};
+        VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR}; VkPipelineDynamicStateCreateInfo dy = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, NULL, 0, 2, dyn};
+        VkPipelineRenderingCreateInfo rci = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, NULL, 0, 1, &g_sfmt};
+        VkGraphicsPipelineCreateInfo ci = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, &rci, 0, 2, ss, &vi, &ia, NULL, &vs, &rs, &ms, NULL, &cbs, &dy, g_ov.layout};
+        VkResult r = vkCreateGraphicsPipelines(V.dev, V.pcache, 1, &ci, NULL, &g_ov.pipe);
+        vkDestroyShaderModule(V.dev, vm, NULL); vkDestroyShaderModule(V.dev, fm, NULL);
+        if (r) { VKRED_ONCE(92, "overlay pipeline failed: %d", r); return 0; }
+        g_ov.pfmt = g_sfmt;
+    }
+    if (g_ov.w != w || g_ov.h != h) {   // (re)rasterize for this window size
+        vkDeviceWaitIdle(V.dev);
+        if (g_ov.view) { vkDestroyImageView(V.dev, g_ov.view, NULL); vkDestroyImage(V.dev, g_ov.img, NULL); vkFreeMemory(V.dev, g_ov.mem, NULL); vkDestroyBuffer(V.dev, g_ov.up, NULL); vkFreeMemory(V.dev, g_ov.upm, NULL); }
+        uint32_t sh = ov_layout_sprites(h); float mr[4]; ov_menu_rect((float)g_sext.width, (float)g_sext.height, mr);
+        g_ov.pw = (uint32_t)(mr[2] / 2) + 1; g_ov.ph = (uint32_t)(mr[3] / 2) + 1; if (g_ov.pw > w) g_ov.pw = w;
+        uint32_t th = h + sh + g_ov.ph;
+        VkImageCreateInfo ic = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, 0, VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, {w, th, 1}, 1, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL,
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED};
+        VKCHK(vkCreateImage(V.dev, &ic, NULL, &g_ov.img)); VkMemoryRequirements rq; vkGetImageMemoryRequirements(V.dev, g_ov.img, &rq);
+        VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, rq.size, vk_mem_type(rq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0)};
+        VKCHK(vkAllocateMemory(V.dev, &ai, NULL, &g_ov.mem)); VKCHK(vkBindImageMemory(V.dev, g_ov.img, g_ov.mem, 0));
+        VkImageViewCreateInfo vi = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, NULL, 0, g_ov.img, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, {0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        VKCHK(vkCreateImageView(V.dev, &vi, NULL, &g_ov.view));
+        VkBufferCreateInfo bc = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, (VkDeviceSize)w * th * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE};
+        VKCHK(vkCreateBuffer(V.dev, &bc, NULL, &g_ov.up)); VkMemoryRequirements bq; vkGetBufferMemoryRequirements(V.dev, g_ov.up, &bq);
+        VkMemoryAllocateInfo bi = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, bq.size, vk_mem_type(bq.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0)};
+        VKCHK(vkAllocateMemory(V.dev, &bi, NULL, &g_ov.upm)); VKCHK(vkBindBufferMemory(V.dev, g_ov.up, g_ov.upm, 0));
+        void *px; VKCHK(vkMapMemory(V.dev, g_ov.upm, 0, VK_WHOLE_SIZE, 0, &px)); g_ov.px = px;
+        g_ov.w = w; g_ov.h = h; g_ov.sh = sh; ov_raster(g_ov.px, w, h, sh); memset(g_ov.px + (size_t)w * (h + sh) * 4, 0, (size_t)w * g_ov.ph * 4);
+        VkDescriptorImageInfo ii = {g_ov.samp, g_ov.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet wr = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, g_ov.set, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ii};
+        vkUpdateDescriptorSets(V.dev, 1, &wr, 0, NULL);
+        g_ov.uploaded = 0; g_ov.panel = -1;
+    }
+    uint32_t y0 = 0, rows = g_ov.h + g_ov.sh + g_ov.ph;   // the rows to upload
+    if (g_ov.uploaded && menu >= 0 && menu != g_ov.panel) {   // only the panel, after the last copy out of the buffer has run
+        VkFence f[8]; uint32_t n = 0; for (uint32_t i = 0; i < 8; i++) if (i != k) f[n++] = g_pfence[i];
+        vkWaitForFences(V.dev, n, f, 1, 1000000000ull);
+        y0 = g_ov.h + g_ov.sh; rows = g_ov.ph; g_ov.uploaded = 0;
+    }
+    if (menu >= 0 && menu != g_ov.panel) { ov_panel(menu); g_ov.panel = menu; }
+    if (!g_ov.uploaded) {
+        VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, y0 ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, g_ov.img, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+        VkBufferImageCopy c = {(VkDeviceSize)y0 * g_ov.w * 4, g_ov.w, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, (int32_t)y0, 0}, {g_ov.w, rows, 1}};
+        vkCmdCopyBufferToImage(cb, g_ov.up, g_ov.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+        b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT; b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+        g_ov.uploaded = 1;
+    }
+    return 1;
+}
+static void present_window(vkimg_t *im, const int crop[4]) {
+    uint32_t k = g_pi++ % 8;
+    vkWaitForFences(V.dev, 1, &g_pfence[k], 1, UINT64_MAX);
+    uint32_t idx; VkResult r = vkAcquireNextImageKHR(V.dev, g_swap, UINT64_MAX, g_acq[k], VK_NULL_HANDLE, &idx);
+    if (r == VK_ERROR_OUT_OF_DATE_KHR) { swap_destroy(); if (!swap_make()) return; r = vkAcquireNextImageKHR(V.dev, g_swap, UINT64_MAX, g_acq[k], VK_NULL_HANDLE, &idx); }
+    if (r < 0) { VKRED_ONCE(90, "vkAcquireNextImageKHR: %d", r); return; }
+    vkResetFences(V.dev, 1, &g_pfence[k]);
+    VkCommandBuffer cb = g_pcb[k];
+    VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}; vkBeginCommandBuffer(cb, &bi);
+    vk_img_barrier_all(cb);   // after everything submitted before on this queue
+    barrier(cb, g_simg[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkClearColorValue black = {{0, 0, 0, 1}}; VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdClearColorImage(cb, g_simg[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rg);
+    int cx = crop ? crop[0] : 0, cy = crop ? crop[1] : 0, cw = crop && crop[2] ? crop[2] : (int)im->w, ch = crop && crop[3] ? crop[3] : (int)im->h;
+    double s = fmin((double)g_sext.width / cw, (double)g_sext.height / ch); int dw = (int)(cw * s), dh = (int)(ch * s), dx = ((int)g_sext.width - dw) / 2, dy = ((int)g_sext.height - dh) / 2;
+    VkImageBlit b = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {{cx, cy, 0}, {cx + cw, cy + ch, 1}}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {{dx, dy, 0}, {dx + dw, dy + dh, 1}}};
+    vkCmdBlitImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, g_simg[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
+    VkImageLayout lay = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    int ovm = dm_overlay_visible(), menu = dm_menu_state();
+    if ((ovm || menu >= 0) && overlay_ready(cb, k, menu)) {
+        barrier(cb, g_simg[idx], lay, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL); lay = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        VkRenderingAttachmentInfo ca = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, NULL, g_sview[idx], lay, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE};
+        VkRenderingInfo ri = {VK_STRUCTURE_TYPE_RENDERING_INFO, NULL, 0, {{0, 0}, g_sext}, 1, 0, 1, &ca, NULL, NULL};
+        vkCmdBeginRendering(cb, &ri);
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_ov.pipe);
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_ov.layout, 0, 1, &g_ov.set, 0, NULL);
+        VkViewport vp = {0, 0, (float)g_sext.width, (float)g_sext.height, 0, 1}; VkRect2D sc = {{0, 0}, g_sext};
+        vkCmdSetViewport(cb, 0, 1, &vp); vkCmdSetScissor(cb, 0, 1, &sc);
+        ov_render(cb, ovm, menu);
+        vkCmdEndRendering(cb);
+    }
+    barrier(cb, g_simg[idx], lay, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    vkEndCommandBuffer(cb);
+    VkPipelineStageFlags ws = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 1, &g_acq[k], &ws, 1, &cb, 1, &g_done_sem[k]};
+    extern pthread_mutex_t g_vk_queue_mu;
+    pthread_mutex_lock(&g_vk_queue_mu);
+    if (vkQueueSubmit(V.q, 1, &si, g_pfence[k])) { pthread_mutex_unlock(&g_vk_queue_mu); VKRED_ONCE(91, "present submit failed"); return; }
+    VkPresentInfoKHR pi = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, NULL, 1, &g_done_sem[k], 1, &g_swap, &idx, NULL};
+    r = vkQueuePresentKHR(V.q, &pi);
+    pthread_mutex_unlock(&g_vk_queue_mu);
+    if (r == VK_ERROR_OUT_OF_DATE_KHR) swap_destroy();
+}
+// headless frame shots
+static int shot_wanted(uint64_t n) {
+    static uint64_t until; const char *k = getenv("DM_VK_SHOTS");   // a DM_CTL "env DM_VK_SHOTS=N" line: each of the next N presents (a transition caught frame by frame)
+    if (k && atoi(k) > 0) { until = n + (uint64_t)atoi(k); setenv("DM_VK_SHOTS", "0", 1); VKLOG("frame shots: presents %llu to %llu", (unsigned long long)n, (unsigned long long)until - 1); }
+    if (n < until) return 1;
+    static const char *e; static int init; if (!init) { init = 1; e = getenv("DM_VK_SHOT"); }
+    if (!e) return 0;
+    for (const char *p = e; *p;) { char *end; unsigned long long v = strtoull(p, &end, 10); if (end == p) break; if (v == n) return 1; p = *end == ',' ? end + 1 : end; }
+    return 0;
+}
+static void shot(vkimg_t *im, uint64_t n) {
+    void mtl_sub_begin(void); uint64_t mtl_sub_commit(void); int mtl_wait(uint64_t, uint64_t);
+    uint32_t w = im->w, h = im->h; VkBuffer sb; VkDeviceSize so;
+    mtl_sub_begin();
+    uint8_t *p = vk_scratch((VkDeviceSize)w * h * 4, 16, &sb, &so);
+    VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
+    VkBufferImageCopy c = {so, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {w, h, 1}};
+    vkCmdCopyImageToBuffer(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, sb, 1, &c);
+    mtl_wait(mtl_sub_commit(), ~0ull);
+    const char *dir = getenv("DM_VK_SHOT_DIR"); if (!dir) dir = getenv("DM_ROOT"); if (!dir) dir = ".";
+    char path[1024]; snprintf(path, sizeof path, "%s/frame_%06llu.ppm", dir, (unsigned long long)n);
+    FILE *f = fopen(path, "wb");
+    if (!f) { VKLOG("[RED] cannot write %s", path); return; }
+    fprintf(f, "P6\n%u %u\n255\n", w, h);
+    int bgra = im->fmt == VK_FORMAT_B8G8R8A8_UNORM || im->fmt == VK_FORMAT_B8G8R8A8_SRGB;
+    uint8_t *row = malloc((size_t)w * 3);
+    for (uint32_t y = 0; y < h; y++) { const uint8_t *s = p + (size_t)y * w * 4; for (uint32_t x = 0; x < w; x++) { row[3 * x] = s[4 * x + (bgra ? 2 : 0)]; row[3 * x + 1] = s[4 * x + 1]; row[3 * x + 2] = s[4 * x + (bgra ? 0 : 2)]; } fwrite(row, 1, (size_t)w * 3, f); }
+    free(row); fclose(f);
+    VKLOG("frame %llu written to %s (%ux%u)", (unsigned long long)n, path, w, h);
+}
+static pthread_mutex_t g_present_mu = PTHREAD_MUTEX_INITIALIZER;   // the swapchain against the window going away (vk_window_lost, on the main thread)
+void vk_window_lost(void) { pthread_mutex_lock(&g_present_mu); swap_destroy(); g_win = NULL; pthread_mutex_unlock(&g_present_mu); }
+// The present thread: mtl_present only queues the frame and returns (as on Apple), so the game thread never waits in vkAcquireNextImageKHR or on the
+// swapchain's fences (a FIFO swapchain blocks there until a vsync); the window texture is not drawn again before its blit, because NVN's acquire waits for
+// its ticket (mtl_present_wait), and the blit's submission comes after the frame's own on the one queue. DM_VK_SYNC_PRESENT=1 presents on the game thread.
+#define PQ_N 4
+static struct { vkimg_t *im; int crop[4], has_crop; uint64_t n; } g_pq[PQ_N];
+static uint64_t g_pq_head, g_pq_tail, g_pq_done;   // queued [tail, head), presents up to ticket g_pq_done are blitted
+static pthread_mutex_t g_pq_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_pq_cv = PTHREAD_COND_INITIALIZER;
+// While the game is held (the pause menu) no frame comes: dm_overlay_redraw presents the last one again with what the overlay now shows.
+static _Atomic int g_redraw;
+void dm_overlay_redraw(void) { atomic_store(&g_redraw, 1); pthread_mutex_lock(&g_pq_mu); pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu); }
+static void *present_thread(void *arg) {
+    (void)arg; pthread_setname_np(pthread_self(), "vk present");
+    typeof(g_pq[0]) last = {0};
+    for (;;) {
+        pthread_mutex_lock(&g_pq_mu);
+        while (g_pq_tail == g_pq_head && !atomic_load(&g_redraw)) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
+        atomic_store(&g_redraw, 0);
+        if (g_pq_tail == g_pq_head) {   // a redraw, no new frame
+            pthread_mutex_unlock(&g_pq_mu);
+            if (last.im) { pthread_mutex_lock(&g_present_mu); if (swap_make()) present_window(last.im, last.has_crop ? last.crop : NULL); pthread_mutex_unlock(&g_present_mu); }
+            continue;
+        }
+        typeof(g_pq[0]) e = g_pq[g_pq_tail % PQ_N];
+        pthread_mutex_unlock(&g_pq_mu);
+        if (e.im) { last = e; pthread_mutex_lock(&g_present_mu); if (swap_make()) present_window(e.im, e.has_crop ? e.crop : NULL); pthread_mutex_unlock(&g_present_mu); }
+        pthread_mutex_lock(&g_pq_mu); g_pq_tail++; g_pq_done = e.n; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu);
+    }
+    return NULL;
+}
+static void present_thread_start(void) { pthread_t t; pthread_create(&t, NULL, present_thread, NULL); pthread_detach(t); }
+static uint64_t present_enqueue(vkimg_t *im, const int crop[4], uint64_t n) {   // im NULL: nothing to show, the ticket still completes in order
+    static int sync = -1; static pthread_once_t once = PTHREAD_ONCE_INIT;
+    if (sync < 0) sync = getenv("DM_VK_SYNC_PRESENT") != NULL;
+    if (sync || !dm_front_window()) {   // headless: nothing to show; or presenting on this thread
+        if (sync && im) { pthread_mutex_lock(&g_present_mu); if (swap_make()) present_window(im, crop); pthread_mutex_unlock(&g_present_mu); }
+        pthread_mutex_lock(&g_pq_mu); if (g_pq_tail == g_pq_head) g_pq_done = n; pthread_mutex_unlock(&g_pq_mu);   // done at once (after any queued ones)
+        return n;
+    }
+    pthread_once(&once, present_thread_start);
+    pthread_mutex_lock(&g_pq_mu);
+    while (g_pq_head - g_pq_tail >= PQ_N) pthread_cond_wait(&g_pq_cv, &g_pq_mu);   // never more than PQ_N frames behind
+    typeof(g_pq[0]) *e = &g_pq[g_pq_head % PQ_N]; e->im = im; e->n = n; e->has_crop = crop != NULL; if (crop) memcpy(e->crop, crop, sizeof e->crop);
+    g_pq_head++; pthread_cond_broadcast(&g_pq_cv);
+    pthread_mutex_unlock(&g_pq_mu);
+    return n;
+}
+void dm_perf_frame(double period); void dm_perf_window(ANativeWindow *w, double fps);   // perf_android.c
+uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
+    vk_init();
+    dm_perf_frame(period);   // paced to the game's frame period, and its work time reported to ADPF
+    static ANativeWindow *rate_win; static double rate_period;
+    if (g_win && (g_win != rate_win || period != rate_period)) { rate_win = g_win; rate_period = period; dm_perf_window(g_win, period > 0 ? 1.0 / period : 60); }
+    uint64_t n = ++g_presents;
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); g_pres_t[n % 64] = ts.tv_sec + ts.tv_nsec / 1e9;
+    vkimg_t *im = vk_tex(t);
+    static uint64_t no_img, undrawn, shown;
+    if (n % 600 == 0) {
+        extern struct { uint64_t draws, skip_prog, skip_rt, skip_pipe, passes, folded, dispatches, pipes_built, rt_kept, ns_exec, ns_desc, ns_pipe, max_pass_draws; } g_vkst; extern uint64_t g_ubd_landed, g_ubd_superseded, g_ubd_shadows, g_ubd_bytes, g_ns_submit, g_gpu_ns, g_pkg_n, g_pkg_bytes, g_pkg_ns, g_set_hits, g_set_new, g_ubd_racy, g_ns_set_build, g_ns_set_hash, g_ns_set_new;
+        static uint64_t psb, psh, psn, pe, pd, pp, ps, pb, pdr, pg, pkn, pkb, pkt;
+        VKLOG("replay up to present %llu: draws %llu, skipped (no program %llu, no target %llu, no pipeline %llu), passes %llu, clears folded %llu, dispatches %llu, pipelines %llu; presents shown %llu, no image %llu, never drawn %llu; uniform updates landed %llu (superseded %llu, shadows %llu, CPU reads racing a GPU write %llu), same targets kept %llu, most draws in one pass %llu",
+              (unsigned long long)n, (unsigned long long)g_vkst.draws, (unsigned long long)g_vkst.skip_prog, (unsigned long long)g_vkst.skip_rt, (unsigned long long)g_vkst.skip_pipe,
+              (unsigned long long)g_vkst.passes, (unsigned long long)g_vkst.folded, (unsigned long long)g_vkst.dispatches, (unsigned long long)g_vkst.pipes_built,
+              (unsigned long long)shown, (unsigned long long)no_img, (unsigned long long)undrawn, (unsigned long long)g_ubd_landed, (unsigned long long)g_ubd_superseded, (unsigned long long)g_ubd_shadows, (unsigned long long)g_ubd_racy, (unsigned long long)g_vkst.rt_kept, (unsigned long long)g_vkst.max_pass_draws);
+        double nd = g_vkst.draws > pdr ? (double)(g_vkst.draws - pdr) / 600 : 0;
+        VKLOG("replay per frame (last 600): %.0f draws, replay %.2f ms (descriptor sets %.2f, pipeline keys %.2f), queue submit %.2f ms, uniform shadows %.0f KB; GPU busy %.2f ms; texture uploads %.1f (%.2f MB, %.2f ms); descriptor sets reused %llu, new %llu (collecting %.2f ms, hashing %.2f, new ones %.2f)",
+              nd, (g_vkst.ns_exec - pe) / 6e8, (g_vkst.ns_desc - pd) / 6e8, (g_vkst.ns_pipe - pp) / 6e8, (g_ns_submit - ps) / 6e8, (g_ubd_bytes - pb) / 600.0 / 1024, (g_gpu_ns - pg) / 6e8, (g_pkg_n - pkn) / 600.0, (g_pkg_bytes - pkb) / 600.0 / 1048576, (g_pkg_ns - pkt) / 6e8, (unsigned long long)g_set_hits, (unsigned long long)g_set_new, (g_ns_set_build - psb) / 6e8, (g_ns_set_hash - psh) / 6e8, (g_ns_set_new - psn) / 6e8);
+        void vk_pass_report(void); vk_pass_report();
+        pe = g_vkst.ns_exec; pd = g_vkst.ns_desc; pp = g_vkst.ns_pipe; ps = g_ns_submit; pb = g_ubd_bytes; pdr = g_vkst.draws; pg = g_gpu_ns; pkn = g_pkg_n; pkb = g_pkg_bytes; pkt = g_pkg_ns; psb = g_ns_set_build; psh = g_ns_set_hash; psn = g_ns_set_new;
+    }
+    if (!im) { no_img++; return present_enqueue(NULL, NULL, n); }
+    if (im->layout != VK_IMAGE_LAYOUT_GENERAL) { undrawn++; return present_enqueue(NULL, NULL, n); }   // never drawn into: nothing to show yet
+    shown++;
+    if (shot_wanted(n)) shot(im, n);
+    { void vk_pass_dump_poll(uint64_t done); uint64_t vk_fence_done(void); vk_pass_dump_poll(vk_fence_done()); }
+    if (n % 1800 == 0) {   // every ~30 s: the pipeline cache to disk on a thread of its own (an Android app can be killed without any exit path)
+        void vk_pipeline_cache_save(void); pthread_t th; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
+        pthread_create(&th, &a, (void *(*)(void *))(void *)vk_pipeline_cache_save, NULL); pthread_attr_destroy(&a);
+    }
+    return present_enqueue(im, crop, n);
+}
+void mtl_present_wait(uint64_t tk) {   // NVN acquire: the window texture's last present has been blitted (the game may draw into it again)
+    if (!tk) return;
+    pthread_mutex_lock(&g_pq_mu);
+    struct timespec dl; clock_gettime(CLOCK_REALTIME, &dl); dl.tv_sec += 1;
+    while (g_pq_done < tk && pthread_cond_timedwait(&g_pq_cv, &g_pq_mu, &dl) == 0) {}
+    pthread_mutex_unlock(&g_pq_mu);
+}
+double mtl_presented_time(uint64_t n) { return n && n <= g_presents && g_presents - n < 64 ? g_pres_t[n % 64] : 0; }
+uint32_t mtl_present_qos(void) { return 0; }
+int mtl_link_active(void) { return 0; }
+int mtl_link_wait_tick(int vsyncs, uint64_t timeout_ns) { (void)vsyncs; (void)timeout_ns; return 0; }
+int mtl_has_window(void) { return dm_front_window() != NULL; }
+int mtl_display_hz(void) { return 60; }
+int mtl_fps_target(void) { return DM_GAME_FPS_TARGET > 0 ? DM_GAME_FPS_TARGET : 60; }
+void mtl_xv_window_tex(uint64_t serial) { (void)serial; }
+void mtl_set_frame(uint64_t f) { (void)f; }
+void mtl_prog_release(prog_t *p) { (void)p; }

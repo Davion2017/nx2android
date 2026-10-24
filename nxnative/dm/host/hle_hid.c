@@ -126,9 +126,13 @@ void hid_keys_init(void) {
 //   points over that time and lifts it (the touch screen's pans and swipes, hle_touch.c gesture_sample), "#…" is ignored.
 //   Look at a screen, decide, press, look again: menus whose timing moves from run to run (loading) need no blind timed script
 static void *ctl_main(void *arg) {
+    // Only lines appended from now on: the file outlives the run (the Android app's files folder), and reading it from the start replayed every
+    // earlier session's presses at boot (NEO's title menu walked by old stick moves, old A presses taken in the game). A file cut shorter starts over
     const char *path = arg; long off = 0; char line[1100];
+    { FILE *f = fopen(path, "r"); if (f) { if (!fseek(f, 0, SEEK_END)) off = ftell(f); fclose(f); } }
     for (;;) {
         FILE *f = fopen(path, "r");
+        if (f && !fseek(f, 0, SEEK_END) && ftell(f) < off) off = 0;
         if (f && !fseek(f, off, SEEK_SET)) {
             while (fgets(line, sizeof line, f)) {
                 size_t n = strlen(line); if (!n || line[n - 1] != '\n') break;   // a line still being written: read it next time

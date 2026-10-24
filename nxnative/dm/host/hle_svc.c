@@ -29,8 +29,22 @@ int dm_guest_as_contains(uintptr_t a) { uintptr_t b = (uintptr_t)g_as; return g_
 static void *alias_windows_thread(void *arg);
 static void mem_init(void) {
     if (g_as) return;
+#if defined(__APPLE__)
     g_as = mmap(NULL, RESERVE, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (g_as == MAP_FAILED) die("reserve guest AS");
+#else
+    // Android port: the alias region (g_as + 256 MB) starts on a 1 GB boundary. The SDK aligns large address regions (a VA-memory StandardAllocator's,
+    // after its ~1 GB node area), so where they fit in the alias region depended on the address ASLR gave the block: NEO's nninitStartup aborted in
+    // StandardAllocator::Initialize on some runs and not on others. 64-bit Android has the address space to over-reserve by 1 GB and trim
+    {   const size_t A = 1ull << 30;
+        uint8_t *r = mmap(NULL, RESERVE + A, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
+        if (r == MAP_FAILED) die("reserve guest AS");
+        uint8_t *al = (uint8_t *)((((uintptr_t)r + 0x10000000 + A - 1) & ~(uintptr_t)(A - 1)) - 0x10000000);
+        if (al > r) munmap(r, (size_t)(al - r));
+        if (al + RESERVE < r + RESERVE + A) munmap(al + RESERVE, (size_t)(r + RESERVE + A - (al + RESERVE)));
+        g_as = al;
+    }
+#endif
     // Fixed partition (all inside the reserved block): alias 2.875 GB, stack 256 MB, heap the remaining 1.625 GB.
     // In newer SDKs the AddressRegionManager always takes 0x3fe00000 (~1 GB) at the start of the alias region as its node area (sdk 0x134728) before handing out regions; with a 512 MB alias region the very first AllocateAddressRegion fails (0x1803).
     // SMBW also defines a 1792000 KB (1.75 GB) VirtualAddressMemory in HeapDef (System/HeapSize): it is subtracted from the memory pool before the heap is opened (SetHeapSize asks for only 0x5be00000),

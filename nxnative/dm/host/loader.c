@@ -28,6 +28,7 @@ static pthread_key_t key_value(unsigned i) {
     default: return g_keygate;
     }
 }
+#if defined(__APPLE__)
 static void create_keys(void) {
     if (pthread_key_create(&g_key18, NULL) || pthread_key_create(&g_keytls, NULL) ||
         pthread_key_create(&g_keytlr, NULL) || pthread_key_create(&g_keygate, NULL)) die("cannot create the host key");
@@ -42,6 +43,40 @@ static void tsd_check(void) {
     if (((uint64_t *)(base & ~7ull))[off / 8] != 0x1234) die("TSD layout mismatch");
     pthread_setspecific(g_key18, 0);
 }
+#else
+// Android: bionic owns tpidr_el0 (its TLS) and 64-bit tasks read 0 from tpidrro_el0. Each thread that runs guest code gets a block of slots whose address
+// sits in bionic's TLS_SLOT_APP (tpidr_el0[2], reserved for app use); the "keys" are indices 1..4 into it (0 stays unused: the loader takes a 0 key page
+// entry as a missing key), and the rewriter (DM_TARGET=android) reads a slot as tpidr_el0[2] + key page entry. The block is freed when the thread exits.
+#define TLS_SLOT_APP 2
+#define TSD_SLOTS 8
+static pthread_key_t g_tsd_free;
+static uint64_t **tp_now(void) { uint64_t **tp; __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tp)); return tp; }
+static void tsd_block_free(void *b) { uint64_t **tp = tp_now(); if (tp[TLS_SLOT_APP] == b) tp[TLS_SLOT_APP] = NULL; free(b); }
+static uint64_t *tsd_block(void) {
+    uint64_t **tp = tp_now(), *b = tp[TLS_SLOT_APP];
+    if (!b) {
+        if (!(b = calloc(TSD_SLOTS, sizeof *b))) die("guest thread slot block allocation failed");
+        tp[TLS_SLOT_APP] = b; pthread_setspecific(g_tsd_free, b);
+    }
+    return b;
+}
+void dm_tsd_set(pthread_key_t k, const void *v) { tsd_block()[k] = (uint64_t)(uintptr_t)v; }
+void *dm_tsd_get(pthread_key_t k) { return (void *)(uintptr_t)tsd_block()[k]; }
+static void create_keys(void) {
+    if (pthread_key_create(&g_tsd_free, tsd_block_free)) die("cannot create the slot block key");
+    uint64_t **tp = tp_now();
+    if (tp[TLS_SLOT_APP]) die("bionic's TLS_SLOT_APP is already in use on this thread (%p): the guest thread slots cannot live there", (void *)tp[TLS_SLOT_APP]);
+    g_key18 = 1; g_keytls = 2; g_keytlr = 3; g_keygate = 4;
+    LOG("guest thread slots in TLS_SLOT_APP blocks: K18=%lu KTLS=%lu KTLR=%lu KGATE=%lu", (unsigned long)g_key18, (unsigned long)g_keytls, (unsigned long)g_keytlr, (unsigned long)g_keygate);
+}
+// K slot check: the slot the rewritten code reads (tpidr_el0[2] + the key page entry) is the one dm_tsd_set wrote
+static void tsd_check(void) {
+    dm_tsd_set(g_key18, (void *)0x1234);
+    uint64_t off = *(uint64_t *)(g_mod[0].base + g_mod[0].key_page_off + g_mod[0].key_idx[KEY_K18] * 8);
+    if (*(uint64_t *)((uint8_t *)tp_now()[TLS_SLOT_APP] + off) != 0x1234) die("guest thread slot layout mismatch");
+    dm_tsd_set(g_key18, 0);
+}
+#endif
 
 static void build_symhash(module_t *m);
 static void parse_dynamic(module_t *m) {
@@ -179,8 +214,9 @@ static void read_layout(module_t *m, const char *dir) {
     FILE *f = fopen(path, "r");
     if (!f) die("open %s", path);
     static const char *kn[KEY_N] = {"K18", "KTLS", "KTLR", "KGATE"};
-    char line[256], key[32]; unsigned long v; unsigned seen = 0;
+    char line[256], key[32], target[16] = "apple"; unsigned long v; unsigned seen = 0;   // an output without TARGET predates the Android port: Apple
     while (fgets(line, sizeof line, f)) {
+        if (!strncmp(line, "# TARGET", 8)) { sscanf(line + 8, "%15s", target); continue; }
         if (sscanf(line, "# %31s %lx", key, &v) != 2) die("%s: the output comes from an old rewriter; rewrite the modules again with dm/tools/patch_nso.py", path);
         if (!strcmp(key, "PATCH_OFF")) m->patch_off = strtoll(line + 2 + strlen(key), NULL, 16);   // may be negative (patch area before the base)
         else if (!strcmp(key, "IMAGE_SIZE")) m->image_size = v;
@@ -200,6 +236,12 @@ static void read_layout(module_t *m, const char *dir) {
         }
     }
     fclose(f);
+#if defined(__APPLE__)
+    static const char *const want = "apple";
+#else
+    static const char *const want = "android";
+#endif
+    if (strcmp(target, want)) die("%s: the module was rewritten for %s, this host runs on %s: rewrite it with DM_TARGET=%s dm/tools/patch_nso.py", path, target, want, want);
     if (!m->patch_off || m->key_page_off % 0x4000 || m->key_page_size != 0x4000 || seen != (1u << KEY_N) - 1)
         die("%s: the output comes from an old rewriter; rewrite the modules again with dm/tools/patch_nso.py", path);
     if (m->patch_off < 0 && (!m->image_size || !m->file_image_len || m->file_image_len % 0x4000 || m->patch_off % 0x4000 || m->key_page_off + m->key_page_size > m->image_size))
