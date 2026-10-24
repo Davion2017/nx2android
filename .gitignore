@@ -1,0 +1,20 @@
+# Toolchains and device tools, downloaded locally (NDK, .NET, adb, validation layer); tools/ also holds the APK signing key
+/tools/
+# Scratch work and probe outputs (some are made from game files)
+/work/
+/build/
+# The local nxnative clone's git folder, kept while moving it into the subtree
+/nxnative.local.git/
+
+# Android build outputs
+/nxnative/dm/android/out/
+*.apk
+*.spv
+*.dmsv
+__pycache__/
+
+# Keys: never committed
+*-signing-key.json
+*.keystore
+prod.keys
+title.keys
