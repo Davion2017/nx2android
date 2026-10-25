@@ -1,6 +1,6 @@
 # The device and app the dev tools work with, instead of a serial and package in every script:
-#   devtools/device.json (not committed) {"serial": "<adb serial, e.g. 192.168.1.20:5555>", "package": "org.nx2a.neo"}, or NX2A_DEVICE / NX2A_PACKAGE (these win).
-#   No serial: the only connected device. No package: the profile's package for NX2A_GAME (a title ID), else org.nx2a.neo.
+#   devtools/device.json (not committed) {"serial": "<adb serial, e.g. 192.168.1.20:5555>", "package": "<the app's package>"}, or NX2A_DEVICE / NX2A_PACKAGE (these win).
+#   No serial: the only connected device. No package: the profile's package for NX2A_GAME (a title ID); with none of these the tools stop.
 # From Python: from device import ADB, PKG, FILES (ADB = the adb command with -s). From a shell script: eval "$(python devtools/device.py --sh)" sets ADB, SERIAL, PKG, F.
 import json, os, sys
 from pathlib import Path
@@ -20,7 +20,7 @@ def _package(c):
     if os.environ.get('NX2A_GAME'):
         from porter import profiles
         return profiles.load(os.environ['NX2A_GAME']).package
-    return 'org.nx2a.neo'
+    sys.exit('devtools: no app to work with: set "package" in devtools/device.json, NX2A_PACKAGE, or NX2A_GAME (a title ID)')
 
 
 _c = _conf()

@@ -94,7 +94,7 @@ nx2android/
   porter/                port pipeline (python -m porter)
   gui/                   desktop app (python -m gui)
   devtools/              device bring-up scripts
-  tests/                 unit tests (python -m unittest discover tests)
+  tests/                 unit tests (python -m unittest discover tests); arch_rules.py checks this file's layer rules
   requirements.txt       the Python modules the tool needs
   probes/                first on-device probes (research)
   nxnative/              subtree: engine, Android runtime, profiles
