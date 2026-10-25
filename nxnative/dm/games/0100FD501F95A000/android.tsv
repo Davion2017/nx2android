@@ -1,6 +1,6 @@
 # Viractal: Will You Trust Your Party? on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
 # Unity on SDK 21; the profile is upstream's provisional one from the survey, not yet checked by hand (game.tsv).
-# Reaches its title screen at 30 fps on the Y700 (2026-10-25). Known gaps: nvnTextureViewCompare is unimplemented (red log lines from the title on),
+# Reaches its title screen at 30 fps on the Y700 (2026-10-25). Known gaps: nvnTextureViewCompare was a red stub (implemented since, not yet checked on the device),
 # and 1,894 of its 25,464 shaders fail in the translator (Ryujinx structured IR, KeyNotFoundException); play past the title is untested.
 status	boots
 tested	v131072 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)

@@ -2036,6 +2036,18 @@ NVN(nvnTextureViewGetSwizzle, NVNboolean, const NVNtextureView *v, NVNtextureSwi
     for (int c = 0; c < 4; c++) if (o[c]) *o[c] = (NVNtextureSwizzle)(w->set_swizzle ? w->swz[c] : NVN_TEXTURE_SWIZZLE_R + c);
     return w->set_swizzle;
 }
+// Two views are the same when each property is unset in both or set to the same value in both (Viractal, Unity on SDK 21, calls it over and over from its title screen on,
+// where it was a red stub)
+NVN(nvnTextureViewCompare, NVNboolean, const NVNtextureView *a, const NVNtextureView *b) {
+    const view_t *x = (const view_t *)a, *y = (const view_t *)b;
+    if (x->set_levels != y->set_levels || (x->set_levels && (x->base_level != y->base_level || x->nlevels != y->nlevels))) return 0;
+    if (x->set_layers != y->set_layers || (x->set_layers && (x->min_layer != y->min_layer || x->nlayers != y->nlayers))) return 0;
+    if (x->set_format != y->set_format || (x->set_format && x->format != y->format)) return 0;
+    if (x->set_target != y->set_target || (x->set_target && x->target != y->target)) return 0;
+    if (x->set_swizzle != y->set_swizzle || (x->set_swizzle && memcmp(x->swz, y->swz, sizeof x->swz))) return 0;
+    if (x->set_dsmode != y->set_dsmode || (x->set_dsmode && x->dsmode != y->dsmode)) return 0;
+    return 1;
+}
 NVN(nvnTextureGetDepthStencilMode, NVNtextureDepthStencilMode, const NVNtexture *t) { return ((const tex_t *)t)->stencil ? NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL : NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH; }
 // Queue priority: the host has one Metal queue
 NVN_NOPROTO(nvnQueueBuilderSetQueuePriority, void, NVNqueueBuilder *b, int prio) { (void)b; (void)prio; }
