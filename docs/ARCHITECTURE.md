@@ -55,13 +55,21 @@ Per-build knowledge stays where upstream keeps it: the rewriter's cuts in `patch
 | inputs | Find the base game, updates and DLC (NSP / XCI), match the profile, pick the version | |
 | extract | `nx_extract` (built with the .NET SDK) | `extract/<version>/{ExeFS,RomFS}`, `aoc/` |
 | rewrite | `patch_nso.py` with `DM_TARGET=android` | `android/patched_<version>/` |
-| shaders | `shader_split.py`, then `shader_vk.py` (SPIR-V) | `android/shader/pkg`, `android/shaders.dmsv` |
+| shaders | `shader_split.py`, then `shader_vk.py` (SPIR-V) | `shader/pkg`, `android/shaders.dmsv` |
 | host | `dm/android/build.py --release` with the player's NDK | `android/host/libdmhost.so` |
 | apk | `dm/android/apk/mkapk.py`, signed with the player's own key | `<out>/<App>.apk` |
 | data | The files the app reads from `/sdcard/Android/data/<package>/files` | `<out>/<App>-data/{mods,RomFS,aoc,shaders.dmsv,env.txt,settings.txt}` |
 | install | `adb install` + pushing the data pack (optional) | |
 
 RomFS in the data pack is hard-linked to the extraction when the volume allows it, so it takes no extra space.
+
+What the port refuses: a game whose `main` renders with Vulkan or OpenGL (the Android host replays NVN only so far), and one whose shaders need a step upstream runs by booting the game in the Mac host (GLSLC capture, Unreal / Oodle decoding).
+
+**Versions.** The newest version in the folder is packed. A version the profile was not brought up on is packed from a derived profile (upstream's `derive_profile`, in `profile-derived/`), without that version's per-build fixes.
+
+**Experimental ports** (`--experimental`, the GUI's Experimental box): a game without an Android profile. With no profile at all, upstream's survey (`<game folder>/<title ID>_survey/survey.md`) guesses a provisional one; with only an iOS profile, that profile is copied. Either way it goes to `<title ID>_build/profile/<title ID>/` with an `android.tsv` of status `experimental`, and every tool finds it there (`DM_GAMES_DIR`). That folder is where a bring-up starts; a game that works gets its profile into `nxnative/dm/games/`.
+
+`--package` installs a port under another package than the profile's, beside the player's other build of the game (a test).
 
 Events: with `--progress json`, every line on stdout is one JSON object, the protocol of upstream's NSP script: `stage`, `step`, `progress`, `stage_end`, `say`; `porter` adds `result` (the outputs) at the end. A line starting `[RED] ` in a `say` is an error or warning.
 
@@ -93,6 +101,6 @@ Updating the engine from upstream: `git subtree pull --prefix nxnative https://g
 
 ## Adding a game
 
-1. Bring it up with the upstream tools and `devtools/` (docs in `nxnative/docs/agents`): a profile in `dm/games/<title ID>/` and general fixes in the core.
+1. `python -m porter port <folder> --experimental --install`: the survey, a provisional profile and a first try on the device. Bring it up from there with the upstream tools and `devtools/` (docs in `nxnative/docs/agents`): the profile moves to `dm/games/<title ID>/`, fixes go into the core as general rules.
 2. Add `android.tsv` with `status` and `tested`.
 3. `python -m porter port` on its folder, install, play. Raise `status` to `playable` when it is.

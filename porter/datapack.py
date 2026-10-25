@@ -33,8 +33,9 @@ def link_tree(src, dst):   # (files, bytes)
 def files_folder(package): return f'/sdcard/Android/data/{package}/files'
 
 
-def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, language='en-US', progress=None):
-    """Write the pack to dst (replacing it). profile: the AndroidProfile. Returns the manifest"""
+def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, language='en-US', package=None, progress=None):
+    """Write the pack to dst (replacing it). profile: the AndroidProfile; package: the app's, when not the profile's. Returns the manifest"""
+    package = package or profile.package
     tmp = dst.with_name(dst.name + '.partial')
     if tmp.exists(): shutil.rmtree(tmp)
     tmp.mkdir(parents=True)
@@ -46,11 +47,11 @@ def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, 
     link_or_copy(shaders, tmp / 'shaders.dmsv'); n += 1; b += shaders.stat().st_size
     env = [f'# Written by nx2android\'s porter for {profile.name} ({profile.id}); KEY=VALUE per line, read by the app at launch',
            f'DM_LANG={language}']
-    if aoc: env.append(f'DM_AOC_DIR={files_folder(profile.package)}/aoc')
+    if aoc: env.append(f'DM_AOC_DIR={files_folder(package)}/aoc')
     env += profile.env
     (tmp / 'env.txt').write_text('\n'.join(env) + '\n', encoding='utf-8', newline='\n')
     if profile.settings: (tmp / 'settings.txt').write_text(''.join(f'{k}={v}\n' for k, v in profile.settings.items()), encoding='utf-8', newline='\n')
-    man = dict(title_id=profile.id, name=profile.name, package=profile.package, version=version, display=display, language=language,
+    man = dict(title_id=profile.id, name=profile.name, package=package, version=version, display=display, language=language,
                files=n, bytes=b, dlc=sorted(int(p.name) for p in aoc.iterdir() if p.is_dir() and p.name.isdigit()) if aoc else [], made=time.strftime('%Y-%m-%d %H:%M:%S'))
     (tmp / MANIFEST).write_text(json.dumps(man, indent=2), encoding='utf-8')
     if dst.exists(): shutil.rmtree(dst)

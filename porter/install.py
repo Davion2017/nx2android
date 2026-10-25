@@ -37,6 +37,10 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False):
             for i in range(0, len(stale), 64): adb.shell(f'cd {shlex.quote(files)} && rm -f ' + ' '.join(shlex.quote(r) for r in stale[i:i + 64]))
         adb.push_file(data / datapack.MANIFEST, f'{files}/{datapack.MANIFEST}')   # last: a pack on the device with its manifest is a complete one
     except AdbError as e:
+        try: gone = adb.serial and not adb.installed(man['package'])
+        except AdbError: gone = False
+        if gone:   # Android deletes an app's files folder with the app: a push into it then fails part-way (a size mismatch)
+            raise BuildError(f'{man["package"]} was uninstalled on the device while its data was being pushed ({e})') from e
         raise BuildError(str(e)) from e
     PROG.end(f'{man["name"]} on {model or dev}')
     say(f'installed: open "{man["name"]}" on the device')

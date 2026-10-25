@@ -26,6 +26,8 @@ class Options:
     device: str = ''                   # adb serial
     replace_signer: bool = False       # uninstall an app of the same package signed with another key
     debug: bool = False                # a development build: debug information, debuggable, DM_CTL
+    experimental: bool = False         # a game not ported to Android yet: a provisional profile from upstream's survey (or a copy of its iOS profile), status experimental
+    package: str = ''                  # the app's package instead of the profile's (a test install beside another build of the game)
     jobs: int = field(default_factory=lambda: os.cpu_count() or 8)
 
 
@@ -44,8 +46,9 @@ def inspect(folder):
     g, ap = profiles.by_title(app)
     info = dict(title_id=f'{app:016X}', base=fam['base'].name, updates=[{'version': f'v{v}' if v is not None else None, 'file': p.name} for v, p in fam['updates']],
                 dlc=[{'title_id': f'{t:016X}', 'file': p.name} for t, _, p in fam['dlc']], profile=None, android=None, versions=[], pack=None, supported=False, reason='')
+    info['experimental'] = not (g and ap)   # a port can still be tried: porter port --experimental
     if not g:
-        info['reason'] = f'no game profile for {app:016X}: this game is not supported'
+        info['reason'] = f'no game profile for {app:016X}: this game is not supported yet (an experimental port surveys it and guesses a profile; it may not start)'
         return info
     builds = g.builds()
     have = nsp.nsp_versions(fam, builds)
@@ -53,7 +56,7 @@ def inspect(folder):
     info.update(profile=g.id, name=g.get('name', g.id), versions=sorted(have, key=nsp.vnum), pack=pack,
                 registered={v: b.get('display', '') for v, b in builds.items()}, derived=pack not in builds)
     if not ap:
-        info['reason'] = f'{g.get("name", g.id)} has a game profile (iOS) but is not ported to Android yet'
+        info['reason'] = f'{g.get("name", g.id)} has a game profile (iOS) but is not ported to Android yet (an experimental port tries it with that profile)'
         return info
     info.update(android=profiles.entry(g, ap).as_dict(), supported=True)
     if pack not in builds:
@@ -95,7 +98,7 @@ class Port:
         self.data()
         if o.install: self.install()
         nsp.rmtree(self.work / 'tmp')
-        self.result.update(title_id=self.g.id, name=self.app_name, package=self.ap.package, version=self.pkg_ver, display=self.display, language=self.lang,
+        self.result.update(title_id=self.g.id, name=self.app_name, package=self.package, version=self.pkg_ver, display=self.display, language=self.lang,
                            status=self.ap.status, derived=bool(self.derived), installed=bool(o.install))
         say(f'done: {self.result["apk"]} and {self.result["data"]}')
         if self.derived: say(f'[RED] {self.derived}: the port is built from a derived profile and may not run as the profile\'s tested version does')
@@ -106,26 +109,63 @@ class Port:
         o = self.o
         say(f'game folder: {o.folder}')
         self.app, self.fam = nsp.scan_nsps(o.folder)
+        tid = f'{self.app:016X}'
+        self.work = o.folder / f'{tid}_build'
         g, ap = profiles.by_title(self.app)
-        if not g: raise BuildError(f'no game profile for {self.app:016X}: this game is not supported (profiles: `porter profiles`)')
-        if not ap: raise BuildError(f'{g.get("name", g.id)} ({g.id}) has a game profile but is not ported to Android yet (no android.tsv in {g.dir})')
+        self.provisional = False
+        if not (g and ap):
+            what = f'no game profile for {tid}' if not g else f'{g.get("name", g.id)} ({g.id}) has a game profile but is not ported to Android yet (no android.tsv in {g.dir})'
+            if not o.experimental: raise BuildError(f'{what}: --experimental tries it anyway (profiles: `porter profiles`)')
+            g, ap = self.experimental_profile(g, tid)
         self.g, self.ap = g, ap
+        self.package = o.package or ap.package
+        if not re.fullmatch(r'[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+', self.package): raise BuildError(f'not a package name: {self.package}')
         say(f'game profile: {g.id} {g.get("name", "")} (Android: {ap.status}' + (f', tested on {ap.tested}' if ap.tested else '') + ')')
         builds, need = g.builds(), g.words('shader_versions')
         have = nsp.nsp_versions(self.fam, builds)
-        self.pkg_ver = o.version or max(have, key=nsp.vnum)
-        if self.pkg_ver not in have: raise BuildError(f'the version to pack ({self.pkg_ver}) is not in the folder, which holds {", ".join(sorted(have, key=nsp.vnum))}')
         self.derived = ''
-        if self.pkg_ver not in builds: self.derived = f'{self.pkg_ver} is not a version game profile {g.id} registers ({", ".join(f"{v} {b["display"]}" for v, b in builds.items())})'
-        elif not all(v in have for v in need): self.derived = f'the folder has no {", ".join(v for v in need if v not in have)}, whose files the profile\'s shader tables were made from'
-        if self.derived: say(f'{self.derived}: packing {self.pkg_ver} from a profile derived from it')
+        if self.provisional:   # the version the survey saw
+            self.pkg_ver = o.version or g.get('package')
+            if self.pkg_ver not in builds: raise BuildError(f'the version to pack must be one the provisional profile registers: {", ".join(builds)}')
+        else:
+            self.pkg_ver = o.version or max(have, key=nsp.vnum)
+            if self.pkg_ver not in have: raise BuildError(f'the version to pack ({self.pkg_ver}) is not in the folder, which holds {", ".join(sorted(have, key=nsp.vnum))}')
+            if self.pkg_ver not in builds: self.derived = f'{self.pkg_ver} is not a version game profile {g.id} registers ({", ".join(f"{v} {b["display"]}" for v, b in builds.items())})'
+            elif not all(v in have for v in need): self.derived = f'the folder has no {", ".join(v for v in need if v not in have)}, whose files the profile\'s shader tables were made from'
+            if self.derived: say(f'{self.derived}: packing {self.pkg_ver} from a profile derived from it')
         self.versions = [self.pkg_ver] if self.derived else need + ([self.pkg_ver] if self.pkg_ver not in need else [])
         self.have = have
-        self.work = o.folder / f'{g.id}_build'
         self.aw = self.work / 'android'; self.logs = self.work / 'logs'
         for d in (self.aw, self.logs, self.work / 'tmp'): d.mkdir(parents=True, exist_ok=True)
         # DM_GAME picks the profile for every tool; WORK keeps their temporary folders inside the build folder (the shader translator writes thousands of files)
         self.env.update(DM_GAME=g.id, DM_ROOT=str(self.work), WORK=str(self.work / 'tmp'))
+
+    def use_profile_dir(self, pdir, first):   # every tool finds the game's profile in pdir (game.py DM_GAMES_DIR; first: before dm/games)
+        dirs = [str(pdir)] + [d for d in os.environ.get('DM_GAMES_DIR', '').split(os.pathsep) if d and d != str(pdir)]
+        self.env['DM_GAMES_DIR'] = os.environ['DM_GAMES_DIR'] = os.pathsep.join(dirs)
+        if first: self.env['DM_GAMES_FIRST'] = os.environ['DM_GAMES_FIRST'] = '1'
+
+    def experimental_profile(self, g, tid):
+        """A profile for a game not ported to Android, in <build folder>/profile/<id>/ (outside the repository): upstream's survey and provisional profile when the game has
+        none (scripts/build_ipa_from_nsp.py survey / write_profile, dm/games/profile_guess.py), or a copy of its iOS profile; plus an android.tsv with status experimental.
+        A game brought up this way gets its profile into dm/games by hand (docs/ARCHITECTURE.md "Adding a game")"""
+        pdir = self.work / 'profile'; d = pdir / tid
+        if g is None:
+            if (d / 'game.tsv').is_file(): say(f'no game profile for {tid}: reusing the provisional profile from the last run ({d}; delete it to survey again)')
+            else:
+                facts = nsp.survey(self.o.folder, self.app, self.fam, self.o.keys, NXNATIVE, PY, self.env)
+                facts['survey'] = f'<NSP folder>/{tid}_survey/survey.md'
+                nsp.write_profile(d, self.app, facts)
+            self.provisional = True
+            say('[RED] provisional game profile: values guessed from the survey, the game may not start')
+        elif not (d / 'game.tsv').is_file() or (g.dir / 'game.tsv').stat().st_mtime > (d / 'game.tsv').stat().st_mtime:   # the iOS profile as it is now
+            nsp.rmtree(d); shutil.copytree(g.dir, d, ignore=shutil.ignore_patterns('patches.py', '__pycache__'))   # patches.py stays in dm/games, where patch_nso.py finds it
+        if not (d / 'android.tsv').is_file():
+            (d / 'android.tsv').write_text(f'# Written by porter for an experimental port: the game has not been brought up on Android\nstatus\texperimental\n'
+                                          f'package\torg.nx2a.t{tid.lower()}\norientation\tlandscape\n', encoding='utf-8')
+        self.use_profile_dir(pdir, first=True)
+        g = game.load(tid)
+        return g, android_profile.AndroidProfile(g)
 
     # ---- extract: nx_extract, each version the shaders come from, the DLC ----
     def extract(self):
@@ -139,19 +179,18 @@ class Port:
         PROG.end()
         self.dirs = {ver: nsp.extract(nx, o.keys, ex, ver, *picks[ver], None, self.logs, g) for ver in self.versions}
         bad = [] if self.derived else [f'{v}: {x}' for v in self.versions for x in nsp.build_mismatch(self.dirs[v], v, g)]
+        if bad and self.provisional: raise BuildError(f'not the builds the provisional profile registers: {"; ".join(bad)}')
         if bad:
             self.derived = f'not the builds game profile {g.id} registers: {"; ".join(bad)}'
             say(f'{self.derived}: packing {self.pkg_ver} from a profile derived from it')
             self.versions, self.dirs = [self.pkg_ver], {self.pkg_ver: self.dirs[self.pkg_ver]}
         self.game = self.dirs[self.pkg_ver]
         if self.derived:   # the derived profile (android.tsv included) goes into the build folder, and every tool takes it first
-            pdir = self.work / 'profile'
+            pdir = self.work / 'profile-derived'   # not profile/: an experimental port's copy there is the profile it derives from
             disp = nsp.derive_profile(g, pdir / g.id, self.pkg_ver, self.game, g.words('modules'))
-            self.env['DM_GAMES_DIR'] = os.environ['DM_GAMES_DIR'] = os.pathsep.join([str(pdir)] + [d for d in os.environ.get('DM_GAMES_DIR', '').split(os.pathsep) if d and d != str(pdir)])
-            self.env['DM_GAMES_FIRST'] = os.environ['DM_GAMES_FIRST'] = '1'
+            self.use_profile_dir(pdir, first=True)
             self.g = game.load(g.id); self.ap = android_profile.AndroidProfile(self.g)
             say(f'derived game profile for {self.pkg_ver} ({disp}): {self.g.dir}')
-            nsp.provisional_prep(PY, NXNATIVE, self.env, self.logs, self.g)
         self.aoc = nsp.extract_aoc(nx, o.keys, NXNATIVE, self.work, self.app, self.fam, self.logs)
         self.base = next((self.dirs[v] for v in self.versions if picks[v][1] is None), self.dirs[self.versions[0]])
         self.app_name = o.app_name or nacp.name(self.base / 'control.nacp') or self.g.get('name', self.g.id)
@@ -161,7 +200,7 @@ class Port:
         if not want: raise BuildError(f'unknown game language {lang_in!r}')
         have = nacp.languages(self.game / 'control.nacp') or nacp.languages(self.base / 'control.nacp')
         self.lang = nsp.game_language(want, bool(lang_in), have)
-        say(f'app: {self.app_name} {self.display} ({self.ap.package}), game language {self.lang}')
+        say(f'app: {self.app_name} {self.display} ({self.package}), game language {self.lang}')
 
     def check_graphics(self):
         """What the Android host can run: NVN games whose shaders are all in their files. The other kinds need a step upstream runs on a Mac (booting the game in the Mac host)
@@ -176,13 +215,17 @@ class Port:
     def rewrite(self):
         self.patched = self.aw / f'patched_{self.pkg_ver}'   # beside, not over, an iOS build's patched_<version>: the rewrite's reuse key does not include the target
         nsp.rewrite(PY, NXNATIVE, self.game / 'ExeFS', self.patched, dict(self.env, DM_TARGET='android'), self.logs, self.g)
-        if self.derived: self.g = nsp.refine_after_rewrite(self.g, self.game, self.patched)
+        if self.derived or self.provisional:   # the keys that need the rewritten modules (upstream's provisional steps)
+            nsp.provisional_prep(PY, NXNATIVE, self.env, self.logs, self.g)
+            self.g = nsp.refine_after_rewrite(self.g, self.game, self.patched)
+            if self.provisional and profile_guess.heap_check_needed(self.game / 'ExeFS') and not nsp.heap_checked(self.g):
+                say('[RED] no heap check: it boots the game in the Mac host; the provisional profile keeps its guessed heap keys')
 
     # ---- shaders: upstream's split, then SPIR-V for the Vulkan backend ----
     def shaders(self):
         sv = self.versions
         pkg = self.work / 'shader' / 'pkg'
-        nsp.split_shaders(PY, NXNATIVE, [self.dirs[v] / 'RomFS' for v in sv], [self.dirs[v] / 'ExeFS/main' for v in sv], pkg, self.env, self.logs, self.g, bool(self.derived))
+        nsp.split_shaders(PY, NXNATIVE, [self.dirs[v] / 'RomFS' for v in sv], [self.dirs[v] / 'ExeFS/main' for v in sv], pkg, self.env, self.logs, self.g, bool(self.derived or self.provisional))
         self.dmsv = self.aw / 'shaders.dmsv'; kf = self.aw / 'shaders.dmsv.key'
         PROG.stage('Vulkan shaders', step='checking the inputs')
         key = nsp.fingerprint(nsp.package_key(pkg), ('files', [DM / 'android/tools/shader_vk.py'] + nsp.tool_files(NXNATIVE)), ('files', nsp.profile_files(self.g)),
@@ -216,7 +259,7 @@ class Port:
         stem = app_stem(self.g, self.app_name)
         self.apk_path = self.o.out / f'{stem}.apk'; self.o.out.mkdir(parents=True, exist_ok=True)
         icon = self.icon()
-        nsp.run([PY, DM / 'android/apk/mkapk.py', self.so, self.apk_path, paths.signing_key(), '--package', self.ap.package, '--label', self.app_name, '--lib', 'dmhost',
+        nsp.run([PY, DM / 'android/apk/mkapk.py', self.so, self.apk_path, paths.signing_key(), '--package', self.package, '--label', self.app_name, '--lib', 'dmhost',
                  '--version-code', str(version_code(self.pkg_ver)), '--version-name', self.display]
                 + (['--landscape'] if self.ap.landscape else []) + (['--icon', icon] if icon else []) + ([] if self.o.debug else ['--release']),
                 self.logs / 'android_apk.log', env=self.env)
@@ -237,7 +280,7 @@ class Port:
         PROG.stage('data pack', step='linking')
         dst = self.o.out / f'{app_stem(self.g, self.app_name)}-data'
         man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched, romfs=self.game / 'RomFS', shaders=self.dmsv,
-                             aoc=self.aoc, language=self.lang, progress=lambda what: PROG.set(step=f'linking {what}'))
+                             aoc=self.aoc, language=self.lang, package=self.package, progress=lambda what: PROG.set(step=f'linking {what}'))
         self.data_path = dst; self.result['data'] = str(dst)
         PROG.end(f'{man["files"]:,} files, {man["bytes"] / 2**30:.1f} GB')
 

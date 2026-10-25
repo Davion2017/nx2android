@@ -62,8 +62,10 @@ class PortTab(QWidget):
         refresh = QPushButton('Refresh'); refresh.clicked.connect(self.refresh_devices)
         dev = QWidget(); dh = QHBoxLayout(dev); dh.setContentsMargins(0, 0, 0, 0); dh.addWidget(self.install); dh.addWidget(self.device, 1); dh.addWidget(refresh)
         self.debug = QCheckBox('Development build (debuggable, debug information, DM_CTL key presses)')
+        self.experimental = QCheckBox('Experimental: try a game that is not ported to Android yet (it may not start)')
+        self.experimental.toggled.connect(lambda _: self.update_port_button())
         f.addRow('App name', self.app_name); f.addRow('Game language', self.language)
-        f.addRow('Output folder', path_row(self.out, self.pick_out)); f.addRow('Device', dev); f.addRow('', self.debug)
+        f.addRow('Output folder', path_row(self.out, self.pick_out)); f.addRow('Device', dev); f.addRow('', self.debug); f.addRow('', self.experimental)
         v.addWidget(o)
 
         bar = QHBoxLayout()
@@ -112,7 +114,7 @@ class PortTab(QWidget):
         a = info.get('android') or {}
         st = a.get('status', 'ios only' if info.get('profile') else 'not supported')
         col = STATUS_COLOUR.get(st, '#c62828')
-        rows = [f'<b>{info.get("name") or info["title_id"]}</b> &nbsp; <span style="color:#757575">{info["title_id"]}</span> &nbsp; '
+        rows = [(f'<b>{info["name"]}</b> &nbsp; <span style="color:#757575">{info["title_id"]}</span>' if info.get('name') else f'<b>{info["title_id"]}</b>') + ' &nbsp; '
                 f'<span style="background:{col};color:white;padding:1px 6px">&nbsp;{st}&nbsp;</span>']
         files = [f'base game' ] + [f'update {u["version"]}' for u in info['updates']] + ([f'{len(info["dlc"])} DLC'] if info['dlc'] else [])
         rows.append('In the folder: ' + ', '.join(files) + (f' — packs <b>{info["pack"]}</b>' if info.get('pack') else ''))
@@ -120,7 +122,11 @@ class PortTab(QWidget):
         if info.get('reason'): rows.append(f'<span style="color:{"#ef6c00" if info["supported"] else "#c62828"}">{info["reason"]}</span>')
         self.card.setText('<br>'.join(rows))
         self.app_name.setPlaceholderText(info.get('name') or 'the game\'s name')
-        self.port_btn.setEnabled(bool(info['supported']) and not self.porter.running())
+        self.update_port_button()
+
+    def update_port_button(self):   # a supported game, or any game with Experimental ticked
+        i = self.info or {}
+        self.port_btn.setEnabled(bool(i.get('supported') or (i.get('experimental') and self.experimental.isChecked())) and not self.porter.running())
 
     def refresh_devices(self):
         cur = self.device.currentData() or config.load().get('device')
@@ -146,6 +152,7 @@ class PortTab(QWidget):
             args.append('--install')
             if self.device.currentData(): args += ['--device', self.device.currentData()]
         if self.debug.isChecked(): args.append('--debug')
+        if self.experimental.isChecked() and not self.info.get('supported'): args.append('--experimental')
         self.run(args)
 
     def install_now(self):
@@ -207,7 +214,7 @@ class PortTab(QWidget):
 
     def on_finished(self, code):
         self.cancel_btn.setEnabled(False)
-        self.port_btn.setEnabled(bool(self.info and self.info.get('supported')))
+        self.update_port_button()
         took = hms(time.time() - self.t0)
         if code == 0:
             self.step.setText(f'done in {took}'); self.prog.setRange(0, 1000); self.prog.setValue(1000)

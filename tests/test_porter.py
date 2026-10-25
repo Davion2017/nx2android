@@ -80,6 +80,22 @@ class DataPack(unittest.TestCase):
             shutil.rmtree(t, ignore_errors=True)
 
 
+class Experimental(unittest.TestCase):
+    def test_ios_profile_copied_with_experimental_android_tsv(self):   # an iOS-only profile is copied out of the repository, never edited in place
+        odyssey = '0100000000010000'
+        t = Path(tempfile.mkdtemp(prefix='nx2a_test_exp_')); environ = dict(os.environ)
+        try:
+            port = pipeline.Port(pipeline.Options(folder=t, experimental=True)); port.env = {}; port.work = t / f'{odyssey}_build'; port.o.keys = None
+            g, ap = port.experimental_profile(game.load(odyssey), odyssey)
+            self.assertEqual(g.dir, (t / f'{odyssey}_build/profile/{odyssey}').resolve())
+            self.assertEqual((ap.status, ap.package), ('experimental', f'org.nx2a.t{odyssey}'))
+            self.assertFalse((REPO / f'nxnative/dm/games/{odyssey}/android.tsv').exists())
+            self.assertFalse((g.dir / 'patches.py').exists())   # patch_nso.py finds the per-build cuts in dm/games
+            self.assertEqual(os.environ.get('DM_GAMES_FIRST'), '1')
+        finally:
+            os.environ.clear(); os.environ.update(environ); shutil.rmtree(t, ignore_errors=True)
+
+
 class Misc(unittest.TestCase):
     def test_config_roundtrip(self):
         config.set_value('device', 'abc:5555'); self.assertEqual(config.load()['device'], 'abc:5555')
