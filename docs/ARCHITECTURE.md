@@ -21,7 +21,7 @@ nxnative/  (git subtree of seedds/nxnative + the Android port)
 | Layer | Where | Holds | Must not hold |
 |---|---|---|---|
 | **Core, shared** | `nxnative/dm/{host,gfx,tools,third_party}` | What every game and both platforms need. Android differences behind `DM_ANDROID` / `__APPLE__` / `DM_TARGET`. | Game-specific branches. Keep the diff to upstream small: it is merged with `git subtree pull`. |
-| **Core, Android runtime** | `nxnative/dm/android/` | Vulkan replay backend (`gfx_vk_*`), the NativeActivity front end (on-screen gamepad, pause menu, settings, haptics, audio, performance hints), the NDK build (`build.py`), the APK writer (`apk/mkapk.py`), the Vulkan shader bundle (`tools/shader_vk.py`), the profile's Android header (`tools/android_profile.py`). | Anything that names a game. A game that needs something different gets a profile key. |
+| **Core, Android runtime** | `nxnative/dm/android/` | Vulkan replay backend (`gfx_vk_*`), the NativeActivity front end (on-screen gamepad, pause menu, settings, haptics, audio, performance hints), the NDK build (`build.py`), the APK writer (`apk/mkapk.py`), the Vulkan shader bundle (`tools/shader_vk.py`), the profile's Android header (`tools/android_profile.py`), the gamepad's default layout (`overlay_default.tsv`). | Code that depends on a game: no title IDs, game names or per-game branches in code (comments may name the game a rule was found with, as upstream's do). A game that needs something different gets a profile key. |
 | **Game profile** | `nxnative/dm/games/<title ID>/` | Data only: `game.tsv` (upstream keys), shader tables, `patches.py` (per-build rewriter cuts), and `android.tsv` (Android keys, below). | Code paths. |
 | **Port pipeline** | `porter/` | The stages that turn game files into the APK and data pack; the toolchain check; the profile registry; installing over adb. Runs headless. | UI. |
 | **GUI** | `gui/` | Screens over `porter`: setup check, game folder, profile status, options, progress, install. | Pipeline logic: everything it does, the CLI does too. |
@@ -31,7 +31,7 @@ The game profile is compiled into the host (`game_profile.h` and `android_profil
 
 ## Game profiles on Android
 
-A profile is offered for Android when it has an `android.tsv`; the 52 upstream profiles without one are iOS profiles and show as "not ported to Android yet". `android.tsv` holds, one `key<TAB>value` row each:
+A profile is offered for Android when it has an `android.tsv`; the profiles without one (52 of the 54 today, upstream's iOS games) show as "ios only": an experimental port can still try them. `android.tsv` holds, one `key<TAB>value` row each:
 
 | Key | Meaning |
 |---|---|
@@ -48,7 +48,7 @@ Per-build knowledge stays where upstream keeps it: the rewriter's cuts in `patch
 
 ## The port
 
-`python -m porter port <game folder> -k <prod.keys>` (the GUI's **Port** button) runs these stages. Each stage keeps its output and is skipped on the next run when its inputs are unchanged.
+`python -m porter port <game folder> -k <prod.keys>` (the GUI's **Port** button) runs these stages. The slow ones (extraction, rewrite, shader split, the translator build, the Vulkan shaders) keep their output with a key of their inputs and are skipped on the next run when the key is unchanged; the host build is incremental (`build.py`), and the APK and the data pack are made again each time (seconds).
 
 | Stage | What | Output (in `<game folder>/<title ID>_build/`) |
 |---|---|---|
@@ -56,10 +56,10 @@ Per-build knowledge stays where upstream keeps it: the rewriter's cuts in `patch
 | extract | `nx_extract` (built with the .NET SDK) | `extract/<version>/{ExeFS,RomFS}`, `aoc/` |
 | rewrite | `patch_nso.py` with `DM_TARGET=android` | `android/patched_<version>/` |
 | shaders | `shader_split.py`, then `shader_vk.py` (SPIR-V) with the translator built from the repository's source (`dm/gfx/tools/dmsh_xlate` over `dm/third_party/ryujinx`, once per player in their nx2android folder) | `shader/pkg`, `android/shaders.dmsv` |
-| host | `dm/android/build.py --release` with the player's NDK | `android/host/libdmhost.so` |
+| host | `dm/android/build.py --release` with the player's NDK (`--debug`: a development build, debug information and `DM_CTL`) | `android/host/libdmhost.so` (`android/host-debug/`) |
 | apk | `dm/android/apk/mkapk.py`, signed with the player's own key | `<out>/<App>.apk` |
-| data | The files the app reads from `/sdcard/Android/data/<package>/files` | `<out>/<App>-data/{mods,RomFS,aoc,shaders.dmsv,env.txt,settings.txt}` |
-| install | `adb install` + pushing the data pack (optional) | |
+| data | The files the app reads from `/sdcard/Android/data/<package>/files` | `<out>/<App>-data/{mods,RomFS,aoc,shaders.dmsv,env.txt,settings.txt,nx2a-data.json}` |
+| install | `adb install`, the profile's `requires` checked against the device, the data pack pushed (optional) | |
 
 RomFS in the data pack is hard-linked to the extraction when the volume allows it, so it takes no extra space.
 
@@ -79,12 +79,12 @@ Events: with `--progress json`, every line on stdout is one JSON object, the pro
 
 The tool does not ship toolchains. `python -m porter doctor` (the GUI's setup screen) checks them:
 - **Android NDK r27c** (`ANDROID_NDK_HOME`, the configured path, or the usual install folders). No Android SDK or JDK: `mkapk.py` writes and signs the APK itself.
-- **.NET SDK 10**: builds `nx_extract` and runs the shader translator.
+- **.NET SDK 10**: builds `nx_extract` and the shader translator, and runs them.
 - **Python 3.11+** with `requirements.txt` (`lz4`, `capstone`, `pillow`, and `PySide6` for the GUI): the port runs the engine's own Python tools (the rewriter, the shader split).
 - **adb** (platform-tools), only to install from the tool.
 - Their own **prod.keys**. Keys and game files are never copied into the repository or the app.
 
-The player's settings and APK signing key live in `%APPDATA%\nx2android` (`~/.config/nx2android` elsewhere): an app keeps the same signer across ports, so updates install over it.
+The player's settings, APK signing key and built translator live in their nx2android folder: `%APPDATA%\nx2android` on Windows, `~/Library/Application Support/nx2android` on a Mac, `~/.config/nx2android` elsewhere (`NX2A_HOME` overrides it). An app keeps the same signer across ports, so updates install over it.
 
 ## Repository layout
 
@@ -94,6 +94,8 @@ nx2android/
   porter/                port pipeline (python -m porter)
   gui/                   desktop app (python -m gui)
   devtools/              device bring-up scripts
+  tests/                 unit tests (python -m unittest discover tests)
+  requirements.txt       the Python modules the tool needs
   probes/                first on-device probes (research)
   nxnative/              subtree: engine, Android runtime, profiles
   RESEARCH.md            feasibility study

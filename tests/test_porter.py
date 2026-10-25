@@ -74,7 +74,7 @@ class DataPack(unittest.TestCase):
             env = (o / 'env.txt').read_text()
             self.assertIn('DM_LANG=ja', env); self.assertIn('DM_AOC_DIR=/sdcard/Android/data/org.nx2a.neo/files/aoc', env)
             self.assertEqual((o / 'settings.txt').read_text(), 'docked=0\noverlay=1\nrumble=1\n')
-            self.assertEqual((man['files'], man['bytes'], man['dlc']), (4, 35, [1]))
+            self.assertEqual((man['files'], man['bytes'], man['dlc'], man['requires']), (4, 35, [1], ['bcn']))   # the installer checks requires
             self.assertEqual(datapack.read_manifest(o)['package'], 'org.nx2a.neo')
         finally:
             shutil.rmtree(t, ignore_errors=True)

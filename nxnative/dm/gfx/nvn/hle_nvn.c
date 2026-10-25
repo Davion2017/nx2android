@@ -911,7 +911,12 @@ NVN(nvnCommandBufferBindProgram, void, NVNcommandBuffer *c, const NVNprogram *p,
     *REC(c, OP_BIND_PROGRAM, p_bind_program) = (p_bind_program){(const prog_t *)p, stages};
 }
 static void bind_state(NVNcommandBuffer *c, int kind, const void *st, size_t n) { p_bind_state *r = REC(c, OP_BIND_STATE, p_bind_state); r->kind = kind; memcpy(r->bytes, st, n); }
-NVN(nvnCommandBufferBindBlendState, void, NVNcommandBuffer *c, const NVNblendState *st) { bind_state(c, 0, st, sizeof(blend_st)); }
+static int blend_adv(blend_st *b);
+NVN(nvnCommandBufferBindBlendState, void, NVNcommandBuffer *c, const NVNblendState *st) {
+    blend_st b = *(const blend_st *)st;
+    if (b.adv) { blend_adv(&b); b.adv = 0; }   // an advanced mode binds as the functions that express it (blend_adv)
+    bind_state(c, 0, &b, sizeof b);
+}
 NVN(nvnCommandBufferBindColorState, void, NVNcommandBuffer *c, const NVNcolorState *st) { bind_state(c, 1, st, sizeof(color_st)); }
 NVN(nvnCommandBufferBindChannelMaskState, void, NVNcommandBuffer *c, const NVNchannelMaskState *st) { bind_state(c, 2, st, sizeof(chmask_st)); }
 NVN(nvnCommandBufferBindMultisampleState, void, NVNcommandBuffer *c, const NVNmultisampleState *st) { bind_state(c, 3, st, sizeof(ms_st)); }
@@ -1028,8 +1033,26 @@ NVN(nvnBlendStateSetBlendFunc, void, NVNblendState *s, NVNblendFunc sr, NVNblend
 }
 NVN(nvnBlendStateSetBlendEquation, void, NVNblendState *s, NVNblendEquation er, NVNblendEquation ea) { ST(blend_st, s)->eq_rgb = er; ST(blend_st, s)->eq_a = ea; }
 // Advanced blend modes (NV_blend_equation_advanced: multiply, screen, overlay, ...) have no Metal blend state; mode 0 (none, which Luigi's Mansion 3 sets on every blend state) is the default
+// Advanced blend modes that the blend functions express: the modes blend premultiplied colours, as KHR_blend_equation_advanced does, and over an opaque destination
+// (Ad = 1, a colour target's usual alpha) these are exact with plain functions. MULTIPLY: Cs·Cd + Cd·(1 − As) (Viractal's, mode 21); SCREEN: Cs + Cd − Cs·Cd;
+// SRC_OVER and PLUS are exact at any alpha. The mode is kept in the state and put in place of its functions when the state is bound (the game may set the
+// functions after the mode). Other modes keep a red line and the state's own functions
+static int blend_adv(blend_st *b) {
+    switch (b->adv) {
+    case NVN_BLEND_ADVANCED_MODE_NONE: return 1;
+    case NVN_BLEND_ADVANCED_MODE_SRC_OVER: b->src_rgb = NVN_BLEND_FUNC_ONE; b->dst_rgb = NVN_BLEND_FUNC_ONE_MINUS_SRC_ALPHA; break;
+    case NVN_BLEND_ADVANCED_MODE_PLUS: b->src_rgb = NVN_BLEND_FUNC_ONE; b->dst_rgb = NVN_BLEND_FUNC_ONE; b->src_a = b->dst_a = NVN_BLEND_FUNC_ONE; b->eq_rgb = b->eq_a = NVN_BLEND_EQUATION_ADD; return 1;
+    case NVN_BLEND_ADVANCED_MODE_MULTIPLY: b->src_rgb = NVN_BLEND_FUNC_DST_COLOR; b->dst_rgb = NVN_BLEND_FUNC_ONE_MINUS_SRC_ALPHA; break;
+    case NVN_BLEND_ADVANCED_MODE_SCREEN: b->src_rgb = NVN_BLEND_FUNC_ONE_MINUS_DST_COLOR; b->dst_rgb = NVN_BLEND_FUNC_ONE; break;
+    default: return 0;
+    }
+    b->src_a = NVN_BLEND_FUNC_ONE; b->dst_a = NVN_BLEND_FUNC_ONE_MINUS_SRC_ALPHA; b->eq_rgb = b->eq_a = NVN_BLEND_EQUATION_ADD;   // alpha: As + Ad·(1 − As) in every mode
+    return 1;
+}
 NVN(nvnBlendStateSetAdvancedMode, void, NVNblendState *s, NVNblendAdvancedMode mode) {
-    (void)s; static int once; if (mode && !once++) LOG("[RED] nvnBlendStateSetAdvancedMode %d: advanced blend modes are not implemented, the state blends with its blend functions", mode);
+    ST(blend_st, s)->adv = (unsigned)mode & 0x3f;
+    blend_st t = *ST(blend_st, s);
+    static int once; if (!blend_adv(&t) && !once++) LOG("[RED] nvnBlendStateSetAdvancedMode %d: this advanced blend mode is not implemented, the state blends with its blend functions", mode);
 }
 NVN(nvnColorStateSetDefaults, void, NVNcolorState *s) { *ST(color_st, s) = (color_st){0, NVN_LOGIC_OP_COPY, NVN_ALPHA_FUNC_ALWAYS}; }
 NVN(nvnColorStateSetBlendEnable, void, NVNcolorState *s, int i, uint32_t en) {
