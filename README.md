@@ -15,8 +15,7 @@ Each game is a profile in `nxnative/dm/games/<title ID>/` with an `android.tsv`.
 
 ## Setup
 
-Install, once:
-- [Python](https://www.python.org) 3.11 or later, then `python -m pip install -r requirements.txt`
+The app comes as a bundle: unzip `nx2android-<version>.zip` and start `nx2android.exe` ([packaging/INSTALL.md](packaging/INSTALL.md)). From the repository instead, install [Python](https://www.python.org) 3.11 or later and `python -m pip install -r requirements.txt`. Either way, install once:
 - [Android NDK r27c](https://developer.android.com/ndk/downloads) (only the NDK: no Android Studio, SDK or JDK)
 - [.NET SDK 10](https://dotnet.microsoft.com/download)
 - Android [platform-tools](https://developer.android.com/tools/releases/platform-tools) (adb), to install from the tool
@@ -46,8 +45,18 @@ The APK (`NeoTheWorldEndsWithYou.apk`) and the data pack (`NeoTheWorldEndsWithYo
 - `porter/`: the port pipeline (`python -m porter`).
 - `gui/`: the desktop app (`python -m gui`).
 - `nxnative/`: nxnative, kept as a git subtree of `seedds/nxnative` (squashed), with the Android runtime in `nxnative/dm/android/` and the game profiles in `nxnative/dm/games/`.
+- `packaging/`: the player's bundle (`python packaging/build_bundle.py`).
 - `devtools/`: scripts for bringing up a game on a connected device (`devtools/device.json` names the device: `{"serial": "...", "package": "..."}`).
 - `probes/`, `RESEARCH.md`: the feasibility study and the first on-device probes.
+
+## Building the bundle
+
+```
+python -m pip install -r requirements.txt pyinstaller
+python packaging/build_bundle.py
+```
+
+`dist/nx2android/` and `dist/nx2android-<version>.zip`: the app, the committed `nxnative/` and the install guide; no toolchains, keys or game files.
 
 ## Tests
 

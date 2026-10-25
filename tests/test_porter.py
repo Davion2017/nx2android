@@ -108,6 +108,16 @@ class Misc(unittest.TestCase):
     def test_app_stem(self):
         self.assertEqual(pipeline.app_stem(game.load(NEO), 'NEO'), 'NeoTheWorldEndsWithYou')
 
+    def test_disk_space(self):   # twice the game files, less what the build folder holds, plus 1 GB
+        from types import SimpleNamespace as NS
+        d = Path(tempfile.mkdtemp(prefix='nx2a_test_game_')); (d / 'g.nsp').write_bytes(b'\0' * 2**20); work = d / 'build'
+        p = NS(o=NS(folder=d), work=work); real = shutil.disk_usage
+        try:
+            shutil.disk_usage = lambda _: NS(free=2**30 + 2**20)
+            with self.assertRaises(pipeline.BuildError): pipeline.Port.check_space(p)
+            work.mkdir(); (work / 'x').write_bytes(b'\0' * 2**20); pipeline.Port.check_space(p)   # a build folder already there counts
+        finally: shutil.disk_usage = real
+
 
 if __name__ == '__main__':
     unittest.main()

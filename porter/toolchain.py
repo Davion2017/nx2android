@@ -12,6 +12,7 @@ NDK_RELEASE = 'r27c'
 DOTNET_MAJOR = 10
 PY_MODULES = {'lz4.block': 'lz4', 'capstone': 'capstone'}   # the rewriter (capstone) and the NSO reader (lz4)
 EXE = '.exe' if os.name == 'nt' else ''
+DISK_GB = 20   # the setup check's free space: a NEO-sized port (7 GB of build folder) with room to spare
 
 
 class ToolError(Exception):
@@ -111,6 +112,11 @@ def checks(cfg=None, keys=None):
     k = keys or cfg.get('keys')
     out.append(Check('prod.keys', bool(k) and Path(k).is_file(), k if k and Path(k).is_file() else (f'no such file: {k}' if k else 'not set'), path=k or '',
                      fix='' if k and Path(k).is_file() else 'dump prod.keys from your own Switch and set its path'))
+    where = Path(cfg.get('out') or Path.home())   # the output folder's drive, or the home folder's (a port's build folder goes beside the game files: the port checks that drive itself)
+    where = next((p for p in (where, *where.parents) if p.exists()), Path.home())
+    free = shutil.disk_usage(where).free / 2**30
+    out.append(Check('Disk space', free >= DISK_GB, f'{free:.0f} GB free on {where.anchor}', required=False,
+                     fix='' if free >= DISK_GB else f'a port takes about twice its game files on the game folder\'s drive (NEO: 7 GB); keep {DISK_GB} GB free'))
     return out
 
 

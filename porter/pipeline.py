@@ -135,10 +135,19 @@ class Port:
             if self.derived: say(f'{self.derived}: packing {self.pkg_ver} from a profile derived from it')
         self.versions = [self.pkg_ver] if self.derived else need + ([self.pkg_ver] if self.pkg_ver not in need else [])
         self.have = have
+        self.check_space()
         self.aw = self.work / 'android'; self.logs = self.work / 'logs'
         for d in (self.aw, self.logs, self.work / 'tmp'): d.mkdir(parents=True, exist_ok=True)
         # DM_GAME picks the profile for every tool; WORK keeps their temporary folders inside the build folder (the shader translator writes thousands of files)
         self.env.update(DM_GAME=g.id, DM_ROOT=str(self.work), WORK=str(self.work / 'tmp'))
+
+    def check_space(self):
+        """Stop before extracting when the game folder's drive cannot hold the port: a build folder takes about 1 to 2 times the game files (NEO 7.0 GB of 6.8,
+        Viractal 2.7 of 1.4), less what an earlier port left there, plus a margin"""
+        game = sum(f.stat().st_size for f in self.o.folder.iterdir() if f.is_file() and f.suffix.lower() in ('.nsp', '.xci'))
+        built = sum(f.stat().st_size for f in self.work.rglob('*') if f.is_file()) if self.work.is_dir() else 0
+        need, free = max(0, 2 * game - built) + 2**30, shutil.disk_usage(self.o.folder).free
+        if free < need: raise BuildError(f'not enough disk space on {self.o.folder.anchor}: the port needs about {need / 2**30:.1f} GB more, {free / 2**30:.1f} GB is free')
 
     def use_profile_dir(self, pdir, first):   # every tool finds the game's profile in pdir (game.py DM_GAMES_DIR; first: before dm/games)
         dirs = [str(pdir)] + [d for d in os.environ.get('DM_GAMES_DIR', '').split(os.pathsep) if d and d != str(pdir)]

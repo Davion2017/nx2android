@@ -22,3 +22,6 @@ title.keys
 
 # Python environment (python -m venv .venv)
 /.venv/
+
+# The player bundle (python packaging/build_bundle.py)
+/dist/
