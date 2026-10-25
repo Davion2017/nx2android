@@ -63,6 +63,8 @@ Per-build knowledge stays where upstream keeps it: the rewriter's cuts in `patch
 
 RomFS in the data pack is hard-linked to the extraction when the volume allows it, so it takes no extra space.
 
+The install starts the app once before pushing anything: Android makes the app's files folder, owned by the app with the app's group, when the app first asks for it, and a folder the shell makes first lacks that group underneath FUSE, so the app cannot read what is pushed below it. Files whose path passes Windows' 260 characters are pushed through short hard links (adb.exe is not long-path aware).
+
 What the port refuses: a game whose `main` renders with Vulkan or OpenGL (the Android host replays NVN only so far), and one whose shaders need a step upstream runs by booting the game in the Mac host (GLSLC capture, Unreal / Oodle decoding).
 
 **Versions.** The newest version in the folder is packed. A version the profile was not brought up on is packed from a derived profile (upstream's `derive_profile`, in `profile-derived/`), without that version's per-build fixes.

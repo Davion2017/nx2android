@@ -1,12 +1,31 @@
 # adb for installing a port: the device list, installing the APK, and pushing the data pack in short transfers. Big pushes over one adb connection wedge adbd on some
 # devices (a 6 GB RomFS), so small files go in batches and big files in 64 MB pieces that the device joins; a rerun resumes (files already at their size are skipped,
 # pieces already in place are kept). Pushes use -Z: compressing them took adbd down.
-import hashlib, os, shlex, subprocess, tempfile, time
+import contextlib, hashlib, os, shlex, shutil, subprocess, tempfile, time
 from pathlib import Path
 
 
 class AdbError(Exception):
     pass
+
+
+LONG_PATH = 240   # adb.exe is not long-path aware: it cannot open a file whose full path passes Windows' 260 characters (Viractal's Unity bundles in a deep game folder)
+
+
+@contextlib.contextmanager
+def short_paths(paths):
+    """The files under paths adb can open: as they are, or (on Windows, when one is too long) hard links with the same names in a short temporary folder, so they
+    keep their names on the device"""
+    if os.name != 'nt' or all(len(str(Path(p).resolve())) < LONG_PATH for p in paths):
+        yield [str(p) for p in paths]; return
+    with tempfile.TemporaryDirectory(prefix='nx2a_') as t:
+        out = []
+        for p in paths:
+            q = Path(t) / Path(p).name
+            try: os.link(p, q)
+            except OSError: shutil.copy2(p, q)
+            out.append(str(q))
+        yield out
 
 
 class Adb:
@@ -23,7 +42,7 @@ class Adb:
             try:
                 r = subprocess.run(self.cmd(*a), capture_output=True, text=True, errors='replace', timeout=timeout or self.timeout, env=self.env)
                 if r.returncode == 0 or not check: return r.stdout
-                err = (r.stdout + r.stderr).strip()[-400:]
+                err = (r.stderr.strip() or r.stdout.strip())[-400:]   # adb's reason is on stderr; stdout has the files that went
                 if a and a[0] == 'install': break   # an install failure is an answer, not a dropped link
             except subprocess.TimeoutExpired: err = f'timed out after {timeout or self.timeout} s'
             if attempt + 1 < retries:
@@ -85,6 +104,20 @@ class Adb:
             self.run('uninstall', package, timeout=300, retries=1)
             self.run('install', apk, timeout=600, retries=1)
 
+    def prepare_app_files(self, package, timeout=30):
+        """Have Android create the app's files folder (/sdcard/Android/data/<package>/files) before anything is pushed into it: the system makes it, owned by the app with
+        the app's group, when the app first asks for it. A folder the shell makes first lacks that group underneath FUSE, and the app cannot read what is pushed below it
+        (NEO's port died at its first open, mods/main.fixups.tsv). So the app is started once (it stops at once without its data) and stopped again"""
+        files = f'/sdcard/Android/data/{package}/files'
+        if self.shell(f'[ -d {shlex.quote(files)} ] && echo yes; true').strip() == 'yes': return False
+        self.shell(f'am start -W -n {package}/android.app.NativeActivity >/dev/null 2>&1; true', timeout=60)
+        for _ in range(timeout * 2):
+            if self.shell(f'[ -d {shlex.quote(files)} ] && echo yes; true').strip() == 'yes': break
+            time.sleep(0.5)
+        else: raise AdbError(f'{package} did not create its files folder ({files}) within {timeout} s of starting')
+        self.shell(f'am force-stop {package}')
+        return True
+
     def remote_sizes(self, rdir):   # {relative path: size} of every file under rdir on the device
         q = shlex.quote(rdir)
         out = self.shell(f'[ -d {q} ] && cd {q} && find . -type f -exec stat -c "%s %n" {{}} + ; true')
@@ -109,7 +142,9 @@ class Adb:
         for i in range(0, len(small), 32):   # small files: up to 32 per push, one push per directory
             part, by = small[i:i + 32], {}
             for r, p, s in part: by.setdefault(os.path.dirname(r), []).append(p)
-            for d, ps in by.items(): self.run('push', '-Z', *ps, f'{remote}/{d}/' if d else f'{remote}/', timeout=max(self.timeout, 600))
+            for d, ps in by.items():
+                with short_paths(ps) as qs:
+                    self.run('push', '-Z', *qs, f'{remote}/{d}/' if d else f'{remote}/', timeout=max(self.timeout, 600))
             done += sum(s for _, _, s in part)
             if progress: progress(done, total, f'{len(part)} files')
         for rel, p, size in [(r, p, s) for r, p, s in todo if s > chunk]:

@@ -28,6 +28,8 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False):
         if free is not None and need > free: raise BuildError(f'the device has {free / 2**30:.1f} GB free; the game needs {need / 2**30:.1f} GB more')
         PROG.set(step=f'installing {apk.name}')
         adb.install(apk, man['package'], replace_signer=replace_signer)
+        PROG.set(step='letting the app create its files folder')
+        if adb.prepare_app_files(man['package']): say('started the app once so Android made its files folder (it stops at once without its data)')
         PROG.set(step='pushing the game data', done=0, total=man['bytes'], unit='B')
         adb.push_tree(data, files, keep=datapack.KEEP_ON_DEVICE, skip=(datapack.MANIFEST,),
                       progress=lambda d, t, note: PROG.set(done=d, total=t, note=note))
