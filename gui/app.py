@@ -1,0 +1,320 @@
+# The nx2android desktop app: three tabs over porter.
+#   Port   pick the game folder (porter inspect), options, Port (porter port --progress json): the stage list, the current stage's bar, the log; then open or install the result
+#   Setup  the tools a port needs (porter doctor) and the saved settings (porter.config): prod.keys, the NDK, dotnet, adb, the output folder, the device
+#   Games  the game profiles (porter profiles --all)
+import os, subprocess, sys, time
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QColor, QDesktopServices, QFont
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+                               QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
+                               QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+
+from porter import config
+from gui.runner import Porter, call_json
+
+LANGUAGES = [('', 'English (default)'), ('ja', 'Japanese'), ('fr', 'French'), ('de', 'German'), ('it', 'Italian'), ('es', 'Spanish'), ('nl', 'Dutch'), ('pt', 'Portuguese'),
+             ('ru', 'Russian'), ('ko', 'Korean'), ('zh-Hans', 'Chinese (Simplified)'), ('zh-Hant', 'Chinese (Traditional)')]
+STATUS_COLOUR = {'playable': '#2e7d32', 'boots': '#ef6c00', 'experimental': '#ef6c00', 'ios only': '#757575'}
+
+
+def hms(s):
+    s = int(s or 0); return f'{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}' if s >= 3600 else f'{s // 60}:{s % 60:02d}'
+
+
+def size(b):
+    for u, d in (('GB', 2**30), ('MB', 2**20), ('KB', 2**10)):
+        if b >= d: return f'{b / d:.1f} {u}'
+    return f'{b} B'
+
+
+def path_row(edit, pick):   # a line edit with a Browse button
+    w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0)
+    b = QPushButton('Browse…'); b.clicked.connect(pick)
+    h.addWidget(edit, 1); h.addWidget(b)
+    return w
+
+
+# ---------------- Port ----------------
+class PortTab(QWidget):
+    def __init__(self, win):
+        super().__init__()
+        self.win, self.info, self.result, self.items, self.t0 = win, None, None, {}, 0
+        self.porter = Porter(self); self.porter.event.connect(self.on_event); self.porter.finished.connect(self.on_finished)
+        v = QVBoxLayout(self)
+
+        self.folder = QLineEdit(); self.folder.setPlaceholderText('the folder with the game\'s NSP / XCI files (base game, update, DLC)')
+        self.folder.editingFinished.connect(self.inspect)
+        g = QGroupBox('Game'); gl = QVBoxLayout(g)
+        gl.addWidget(path_row(self.folder, self.pick_folder))
+        self.card = QLabel('Choose a game folder.'); self.card.setWordWrap(True); self.card.setTextFormat(Qt.RichText); self.card.setMinimumHeight(60)
+        gl.addWidget(self.card)
+        v.addWidget(g)
+
+        o = QGroupBox('Options'); f = QFormLayout(o)
+        self.app_name = QLineEdit(); self.app_name.setPlaceholderText('the game\'s name')
+        self.language = QComboBox()
+        for code, name in LANGUAGES: self.language.addItem(name, code)
+        self.out = QLineEdit(); self.out.setPlaceholderText('the game folder')
+        self.install = QCheckBox('Install on the device when done')
+        self.device = QComboBox(); self.device.setMinimumWidth(260)
+        refresh = QPushButton('Refresh'); refresh.clicked.connect(self.refresh_devices)
+        dev = QWidget(); dh = QHBoxLayout(dev); dh.setContentsMargins(0, 0, 0, 0); dh.addWidget(self.install); dh.addWidget(self.device, 1); dh.addWidget(refresh)
+        self.debug = QCheckBox('Development build (debuggable, debug information, DM_CTL key presses)')
+        f.addRow('App name', self.app_name); f.addRow('Game language', self.language)
+        f.addRow('Output folder', path_row(self.out, self.pick_out)); f.addRow('Device', dev); f.addRow('', self.debug)
+        v.addWidget(o)
+
+        bar = QHBoxLayout()
+        self.port_btn = QPushButton('Port'); self.port_btn.setEnabled(False); self.port_btn.setMinimumHeight(36)
+        f2 = self.port_btn.font(); f2.setPointSize(f2.pointSize() + 2); f2.setBold(True); self.port_btn.setFont(f2)
+        self.port_btn.clicked.connect(self.start)
+        self.cancel_btn = QPushButton('Cancel'); self.cancel_btn.setEnabled(False); self.cancel_btn.clicked.connect(self.cancel)
+        self.open_btn = QPushButton('Open output folder'); self.open_btn.setEnabled(False); self.open_btn.clicked.connect(self.open_out)
+        self.inst_btn = QPushButton('Install on device'); self.inst_btn.setEnabled(False); self.inst_btn.clicked.connect(self.install_now)
+        for b in (self.port_btn, self.cancel_btn): bar.addWidget(b)
+        bar.addStretch(1)
+        for b in (self.open_btn, self.inst_btn): bar.addWidget(b)
+        v.addLayout(bar)
+
+        self.step = QLabel(''); self.prog = QProgressBar(); self.prog.setTextVisible(True); self.prog.setRange(0, 1000); self.prog.setValue(0)
+        v.addWidget(self.step); v.addWidget(self.prog)
+        split = QSplitter(Qt.Vertical)
+        self.stages = QTreeWidget(); self.stages.setHeaderLabels(['', 'Stage', 'Result', 'Time']); self.stages.setRootIsDecorated(False)
+        hh = self.stages.header(); hh.setSectionResizeMode(0, QHeaderView.ResizeToContents); hh.setSectionResizeMode(1, QHeaderView.ResizeToContents); hh.setSectionResizeMode(2, QHeaderView.Stretch)
+        self.log = QPlainTextEdit(); self.log.setReadOnly(True); self.log.setFont(QFont('Consolas' if os.name == 'nt' else 'Menlo', 9)); self.log.setMaximumBlockCount(20000)
+        split.addWidget(self.stages); split.addWidget(self.log); split.setSizes([180, 220])
+        v.addWidget(split, 1)
+        self.tick = QTimer(self); self.tick.timeout.connect(self.on_tick); self.tick.start(1000)
+        self.refresh_devices()
+
+    # ---- the game folder ----
+    def pick_folder(self):
+        d = QFileDialog.getExistingDirectory(self, 'Game folder', self.folder.text() or str(Path.home()))
+        if d: self.folder.setText(d); self.inspect()
+
+    def pick_out(self):
+        d = QFileDialog.getExistingDirectory(self, 'Output folder', self.out.text() or self.folder.text() or str(Path.home()))
+        if d: self.out.setText(d)
+
+    def inspect(self):
+        d = self.folder.text().strip()
+        self.info = None; self.port_btn.setEnabled(False)
+        if not d: return
+        if not Path(d).is_dir(): self.card.setText(f'<span style="color:#c62828">Not a folder: {d}</span>'); return
+        self.card.setText('Reading the game folder…')
+        call_json(self, ['inspect', d, '--json'], self.on_inspect)
+
+    def on_inspect(self, info, code):
+        self.info = info
+        if not info: self.card.setText('<span style="color:#c62828">No game found in this folder (an NSP or XCI with a title ID).</span>'); return
+        a = info.get('android') or {}
+        st = a.get('status', 'ios only' if info.get('profile') else 'not supported')
+        col = STATUS_COLOUR.get(st, '#c62828')
+        rows = [f'<b>{info.get("name") or info["title_id"]}</b> &nbsp; <span style="color:#757575">{info["title_id"]}</span> &nbsp; '
+                f'<span style="background:{col};color:white;padding:1px 6px">&nbsp;{st}&nbsp;</span>']
+        files = [f'base game' ] + [f'update {u["version"]}' for u in info['updates']] + ([f'{len(info["dlc"])} DLC'] if info['dlc'] else [])
+        rows.append('In the folder: ' + ', '.join(files) + (f' — packs <b>{info["pack"]}</b>' if info.get('pack') else ''))
+        if a.get('tested'): rows.append(f'Tested: {a["tested"]}')
+        if info.get('reason'): rows.append(f'<span style="color:{"#ef6c00" if info["supported"] else "#c62828"}">{info["reason"]}</span>')
+        self.card.setText('<br>'.join(rows))
+        self.app_name.setPlaceholderText(info.get('name') or 'the game\'s name')
+        self.port_btn.setEnabled(bool(info['supported']) and not self.porter.running())
+
+    def refresh_devices(self):
+        cur = self.device.currentData() or config.load().get('device')
+        def got(rows, code):
+            self.device.clear()
+            for r in rows or []:
+                if r['state'] == 'device': self.device.addItem(f'{r["serial"]}  {r["info"]}', r['serial'])
+            if not self.device.count(): self.device.addItem('no device connected', '')
+            i = self.device.findData(cur)
+            if i >= 0: self.device.setCurrentIndex(i)
+        call_json(self, ['devices', '--json'], got)
+
+    # ---- the port ----
+    def start(self):
+        cfg = config.load()
+        if not cfg.get('keys'):
+            QMessageBox.warning(self, 'prod.keys', 'Set the path of your prod.keys on the Setup tab first.'); self.win.tabs.setCurrentIndex(1); return
+        args = ['port', self.folder.text().strip(), '--progress', 'json']
+        if self.app_name.text().strip(): args += ['--app-name', self.app_name.text().strip()]
+        if self.language.currentData(): args += ['--language', self.language.currentData()]
+        if self.out.text().strip(): args += ['--out', self.out.text().strip()]
+        if self.install.isChecked():
+            args.append('--install')
+            if self.device.currentData(): args += ['--device', self.device.currentData()]
+        if self.debug.isChecked(): args.append('--debug')
+        self.run(args)
+
+    def install_now(self):
+        if not self.result: return
+        args = ['install', self.result['data'], '--apk', self.result['apk'], '--progress', 'json']
+        if self.device.currentData(): args += ['--device', self.device.currentData()]
+        self.run(args)
+
+    def run(self, args):
+        self.stages.clear(); self.items = {}; self.log.clear(); self.prog.setValue(0); self.step.setText('starting…')
+        self.result = None; self.t0 = time.time(); self.cancelled = False
+        for b in (self.port_btn, self.open_btn, self.inst_btn): b.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self.append('$ porter ' + ' '.join(f'"{a}"' if ' ' in a else a for a in args))
+        self.porter.start(args)
+
+    def cancel(self):
+        self.cancelled = True; self.porter.cancel(); self.append('[RED] cancelled')
+
+    def append(self, msg):
+        red = msg.startswith('[RED] ')
+        self.log.appendHtml(f'<span style="color:{"#c62828" if red else "inherit"}">{msg.removeprefix("[RED] ").replace("&", "&amp;").replace("<", "&lt;").replace(chr(10), "<br>")}</span>')
+
+    def item(self, k, name):
+        it = self.items.get(k)
+        if not it:
+            it = QTreeWidgetItem(['…', name, '', '']); self.stages.addTopLevelItem(it); self.items[k] = it
+        return it
+
+    def on_event(self, ev):
+        e = ev.get('ev')
+        if e == 'stage':
+            self.cur = ev; it = self.item(ev['k'], ev['name']); it.setText(0, '▶'); it.setData(0, Qt.UserRole, time.time())
+            self.step.setText(f'[{ev["k"]}/{ev["n"]}] {ev["name"]}' + (f' · {ev["step"]}' if ev.get('step') else '')); self.prog.setRange(0, 0)
+        elif e == 'step':
+            self.step.setText(f'{ev["name"]} · {ev["step"]}'); self.prog.setRange(0, 0)
+        elif e == 'progress':
+            done, total = ev.get('done'), ev.get('total')
+            count = '' if done is None else (f'{size(done)} / {size(total)}' if ev.get('unit') == 'B' and total else f'{done:,}' + (f' / {total:,}' if total else '') + (f' {ev["unit"]}' if ev.get('unit') else ''))
+            self.step.setText(f'{ev["name"]}' + (f' · {ev["step"]}' if ev.get('step') else '') + (f' · {count}' if count else '') + (f' · {ev["note"]}' if ev.get('note') else '')
+                              + (f' · ETA {hms(ev["eta"])}' if ev.get('eta') else ''))
+            if ev.get('frac') is not None: self.prog.setRange(0, 1000); self.prog.setValue(int(ev['frac'] * 1000))
+            else: self.prog.setRange(0, 0)
+        elif e == 'stage_end':
+            it = self.item(ev['k'], ev['name']); ok = ev.get('ok', True)
+            it.setText(0, '✓' if ok else '✗'); it.setForeground(0, QColor('#2e7d32' if ok else '#c62828'))
+            it.setText(2, ev.get('summary', '')); it.setText(3, hms(ev.get('elapsed')))
+            self.prog.setRange(0, 1000); self.prog.setValue(1000 if ok else 0)
+        elif e == 'say':
+            self.append(ev.get('msg', ''))
+        elif e == 'result':
+            self.result = ev
+
+    def on_tick(self):   # the running stage's elapsed time
+        if not self.porter.running(): return
+        for it in self.items.values():
+            t = it.data(0, Qt.UserRole)
+            if it.text(0) == '▶' and t: it.setText(3, hms(time.time() - t))
+
+    def on_finished(self, code):
+        self.cancel_btn.setEnabled(False)
+        self.port_btn.setEnabled(bool(self.info and self.info.get('supported')))
+        took = hms(time.time() - self.t0)
+        if code == 0:
+            self.step.setText(f'done in {took}'); self.prog.setRange(0, 1000); self.prog.setValue(1000)
+            if self.result: self.open_btn.setEnabled(True); self.inst_btn.setEnabled(True)
+        else:
+            self.step.setText('cancelled' if self.cancelled or code == 130 else f'failed after {took} (the log says why)')
+            self.prog.setRange(0, 1000); self.prog.setValue(0)
+
+    def open_out(self):
+        if self.result: QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(self.result['apk']).parent)))
+
+
+# ---------------- Setup ----------------
+class SetupTab(QWidget):
+    FIELDS = [('keys', 'prod.keys', 'file'), ('ndk', 'Android NDK folder', 'dir'), ('dotnet', 'dotnet', 'file'), ('adb', 'adb', 'file'),
+              ('out', 'Default output folder', 'dir'), ('device', 'Device (adb serial)', 'text')]
+
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        v = QVBoxLayout(self)
+        g = QGroupBox('Requirements'); gl = QVBoxLayout(g)
+        self.table = QTableWidget(0, 3); self.table.setHorizontalHeaderLabels(['', 'Requirement', 'Found']); self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers); self.table.setSelectionMode(QTableWidget.NoSelection)
+        hh = self.table.horizontalHeader(); hh.setSectionResizeMode(0, QHeaderView.ResizeToContents); hh.setSectionResizeMode(1, QHeaderView.ResizeToContents); hh.setSectionResizeMode(2, QHeaderView.Stretch)
+        gl.addWidget(self.table)
+        note = QLabel('The tool does not ship toolchains. Install <b>Android NDK r27c</b> (developer.android.com/ndk/downloads), the <b>.NET SDK 10</b> (dotnet.microsoft.com) '
+                      'and, to install from here, Android <b>platform-tools</b>. Keys and game files never leave your computer except to your own device.')
+        note.setWordWrap(True); note.setTextFormat(Qt.RichText); gl.addWidget(note)
+        v.addWidget(g)
+        s = QGroupBox('Settings'); f = QFormLayout(s); self.edits = {}
+        for key, label, kind in self.FIELDS:
+            e = QLineEdit(); self.edits[key] = e
+            e.setPlaceholderText({'ndk': 'found automatically', 'dotnet': 'found automatically', 'adb': 'found automatically', 'out': 'the game folder', 'device': 'the only connected device'}.get(key, ''))
+            f.addRow(label, e if kind == 'text' else path_row(e, lambda _=False, k=key, kd=kind: self.pick(k, kd)))
+        row = QHBoxLayout(); save = QPushButton('Save and check'); save.clicked.connect(self.save); row.addStretch(1); row.addWidget(save)
+        f.addRow('', row)
+        v.addWidget(s); v.addStretch(1)
+        self.load()
+
+    def pick(self, key, kind):
+        e = self.edits[key]
+        p = QFileDialog.getExistingDirectory(self, key, e.text()) if kind == 'dir' else QFileDialog.getOpenFileName(self, key, e.text())[0]
+        if p: e.setText(p)
+
+    def load(self):
+        for k, v in config.load().items():
+            if k in self.edits: self.edits[k].setText(v)
+        self.check()
+
+    def save(self):
+        c = config.load()
+        for k, e in self.edits.items(): c[k] = e.text().strip()
+        config.save(c); self.check()
+
+    def check(self):
+        def got(rows, code):
+            self.table.setRowCount(0)
+            for r in rows or []:
+                i = self.table.rowCount(); self.table.insertRow(i)
+                mark = QTableWidgetItem('✓' if r['ok'] else ('✗' if r['required'] else '–'))
+                mark.setForeground(QColor('#2e7d32' if r['ok'] else '#c62828' if r['required'] else '#ef6c00'))
+                self.table.setItem(i, 0, mark); self.table.setItem(i, 1, QTableWidgetItem(r['name']))
+                self.table.setItem(i, 2, QTableWidgetItem(r['detail'] + (f'  →  {r["fix"]}' if r['fix'] and not r['ok'] else '')))
+            self.table.resizeRowsToContents()
+            self.win.set_ready(bool(rows) and all(r['ok'] or not r['required'] for r in rows))
+        call_json(self, ['doctor', '--json'], got)
+
+
+# ---------------- Games ----------------
+class GamesTab(QWidget):
+    def __init__(self):
+        super().__init__()
+        v = QVBoxLayout(self)
+        self.table = QTableWidget(0, 4); self.table.setHorizontalHeaderLabels(['Status', 'Game', 'Title ID', 'Tested on'])
+        self.table.verticalHeader().setVisible(False); self.table.setEditTriggers(QTableWidget.NoEditTriggers); self.table.setSortingEnabled(True)
+        hh = self.table.horizontalHeader(); hh.setSectionResizeMode(1, QHeaderView.Stretch); hh.setSectionResizeMode(2, QHeaderView.ResizeToContents); hh.setSectionResizeMode(3, QHeaderView.Stretch)
+        lab = QLabel('Games with a profile. <b>playable</b> and <b>boots</b> ones can be ported; <i>ios only</i> profiles run on iPhone (nxnative) and are not ported to Android yet.')
+        lab.setWordWrap(True); lab.setTextFormat(Qt.RichText)
+        v.addWidget(lab); v.addWidget(self.table)
+        call_json(self, ['profiles', '--all', '--json'], self.got)
+
+    def got(self, rows, code):
+        rows = sorted(rows or [], key=lambda r: (not r['android'], r['name'].lower()))
+        self.table.setSortingEnabled(False); self.table.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            st = QTableWidgetItem(r['status']); st.setForeground(QColor(STATUS_COLOUR.get(r['status'], '#000')))
+            for j, it in enumerate((st, QTableWidgetItem(r['name']), QTableWidgetItem(r['id']), QTableWidgetItem(r['tested']))): self.table.setItem(i, j, it)
+        self.table.setSortingEnabled(True)
+
+
+class Window(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle('nx2android'); self.resize(980, 820)
+        self.tabs = QTabWidget()
+        self.port = PortTab(self); self.setup = SetupTab(self); self.games = GamesTab()
+        self.tabs.addTab(self.port, 'Port'); self.tabs.addTab(self.setup, 'Setup'); self.tabs.addTab(self.games, 'Games')
+        self.setCentralWidget(self.tabs)
+        self.first = True
+
+    def set_ready(self, ok):   # the first check: a missing requirement opens the Setup tab
+        if self.first and not ok: self.tabs.setCurrentWidget(self.setup)
+        self.first = False
+
+
+def main(argv):
+    app = QApplication(argv); app.setApplicationName('nx2android'); app.setStyle('Fusion')
+    w = Window(); w.show()
+    return app.exec()

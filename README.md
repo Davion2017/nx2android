@@ -1,23 +1,58 @@
 # nx2android
 
-Porting Nintendo Switch games to Android, natively: the game's own arm64 code runs on the device, with the Switch's system services stood in for by a host and NVN graphics replayed on Vulkan. Bring your own game files and keys; nothing from any game is in this repository.
+Port your own Nintendo Switch games to Android, natively: the game's own arm64 code runs on the device, with the Switch's system services stood in for by a host and NVN graphics replayed on Vulkan. Pick the game's folder, click **Port**, and get an APK plus the game's data, installed on your device if you like. Bring your own game files and keys; nothing from any game is in this repository.
 
-This is the Android port of [nxnative](https://github.com/seedds/nxnative), which does the same on iPhone and iPad.
-
-## Layout
-
-- `nxnative/`: nxnative, kept as a git subtree of `seedds/nxnative` (squashed) with the Android port on top. The Android host is in `nxnative/dm/android/` (Vulkan backend, front end with the on-screen gamepad and pause menu, `build.py`, `apk/mkapk.py`); game profiles are in `nxnative/dm/games/<title ID>/`.
-- `probes/`: the first on-device probes (CPU, Vulkan, zero-copy memory pools).
-- `scripts/`: development tools for a connected device (pushing files, screen recording, soak tests, pass traces).
-- `RESEARCH.md`: the feasibility study and the device results.
-
-Not committed (see `.gitignore`): `tools/` (Android NDK r27c, .NET SDK, platform-tools, Vulkan validation layer, the local APK signing key), `work/` and `build/`.
+This is the Android port of [nxnative](https://github.com/seedds/nxnative), which does the same on iPhone and iPad. How it is put together: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Games
 
 | Game | Title ID | Status |
 |---|---|---|
-| NEO: The World Ends with You | `010043B013C5C000` | Boots and plays on a Lenovo Legion Y700 (Snapdragon 8 Elite, Adreno 830) |
+| NEO: The World Ends with You | `010043B013C5C000` | playable on a Lenovo Legion Y700 (Snapdragon 8 Elite, Adreno 830), update 1.03 |
+
+Each game is a profile in `nxnative/dm/games/<title ID>/` with an `android.tsv`. The device's GPU must read BC-compressed textures (Adreno, Xclipse; not Mali or PowerVR).
+
+## Setup
+
+Install, once:
+- [Python](https://www.python.org) 3.11 or later, then `python -m pip install -r requirements.txt`
+- [Android NDK r27c](https://developer.android.com/ndk/downloads) (only the NDK: no Android Studio, SDK or JDK)
+- [.NET SDK 10](https://dotnet.microsoft.com/download)
+- Android [platform-tools](https://developer.android.com/tools/releases/platform-tools) (adb), to install from the tool
+- your own `prod.keys`, dumped from your Switch
+
+## Port a game
+
+The app:
+
+```
+python -m gui
+```
+
+Check the **Setup** tab, choose the game's folder (the base game NSP or XCI, its update and DLC) on the **Port** tab, and click **Port**.
+
+Or the command line:
+
+```
+python -m porter doctor
+python -m porter port "D:\Games\NEO" -k "D:\keys\prod.keys" --install
+```
+
+The APK (`NeoTheWorldEndsWithYou.apk`) and the data pack (`NeoTheWorldEndsWithYou-data/`) appear in the game folder (`-o` picks another). The first port takes a while (extraction, rewriting the game's code, translating its shaders); later ones reuse what has not changed. `python -m porter -h` lists the commands.
+
+## Layout
+
+- `porter/`: the port pipeline (`python -m porter`).
+- `gui/`: the desktop app (`python -m gui`).
+- `nxnative/`: nxnative, kept as a git subtree of `seedds/nxnative` (squashed), with the Android runtime in `nxnative/dm/android/` and the game profiles in `nxnative/dm/games/`.
+- `devtools/`: scripts for bringing up a game on a connected device (`devtools/device.json` names the device: `{"serial": "...", "package": "..."}`).
+- `probes/`, `RESEARCH.md`: the feasibility study and the first on-device probes.
+
+## Tests
+
+```
+python -m unittest discover tests
+```
 
 ## Updating nxnative
 

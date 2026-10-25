@@ -1,0 +1,42 @@
+# Installing a port on a device over adb: the APK, then the data pack into the app's files folder (porter/adb.py pushes it in resumable pieces).
+# The player's own files there are kept: the pause menu's settings.txt, the logs, the Vulkan pipeline caches; saves are in the app's internal storage, which an update keeps.
+import shlex
+from pathlib import Path
+
+from porter import datapack
+from porter.adb import Adb, AdbError
+from porter.upstream import BuildError, PROG, say
+
+
+def install(apk, data, adb_exe, serial=None, replace_signer=False):
+    apk, data = Path(apk), Path(data)
+    man = datapack.read_manifest(data)
+    if not man: raise BuildError(f'not a data pack (no {datapack.MANIFEST}): {data}')
+    if not apk.is_file(): raise BuildError(f'no APK: {apk}')
+    if not adb_exe: raise BuildError('adb not found: install Android platform-tools, or set its path with `porter config adb <path>`')
+    adb = Adb(adb_exe, serial, log=say)
+    PROG.stage('install', step='finding the device')
+    try:
+        dev = adb.pick()
+        model = adb.prop('ro.product.model')
+        say(f'device: {model or dev} ({dev}), GPU {adb.gpu() or "unknown"}')
+        if adb.bc_textures() is False: raise BuildError(f'this device\'s GPU ({adb.gpu()}) cannot read the BC-compressed textures Switch games use')
+        free = adb.free_bytes()
+        files = datapack.files_folder(man['package'])
+        have = adb.remote_sizes(files)
+        need = man['bytes'] - sum(have.values())
+        if free is not None and need > free: raise BuildError(f'the device has {free / 2**30:.1f} GB free; the game needs {need / 2**30:.1f} GB more')
+        PROG.set(step=f'installing {apk.name}')
+        adb.install(apk, man['package'], replace_signer=replace_signer)
+        PROG.set(step='pushing the game data', done=0, total=man['bytes'], unit='B')
+        adb.push_tree(data, files, keep=datapack.KEEP_ON_DEVICE, skip=(datapack.MANIFEST,),
+                      progress=lambda d, t, note: PROG.set(done=d, total=t, note=note))
+        stale = [rel for rel in adb.remote_sizes(files) if rel.split('/', 1)[0] in datapack.OWNED and not (data / rel).is_file()]
+        if stale:   # an older version's files, which the game would still find
+            PROG.set(step=f'removing {len(stale):,} stale files')
+            for i in range(0, len(stale), 64): adb.shell(f'cd {shlex.quote(files)} && rm -f ' + ' '.join(shlex.quote(r) for r in stale[i:i + 64]))
+        adb.push_file(data / datapack.MANIFEST, f'{files}/{datapack.MANIFEST}')   # last: a pack on the device with its manifest is a complete one
+    except AdbError as e:
+        raise BuildError(str(e)) from e
+    PROG.end(f'{man["name"]} on {model or dev}')
+    say(f'installed: open "{man["name"]}" on the device')

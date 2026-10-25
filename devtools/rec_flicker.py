@@ -1,9 +1,10 @@
-# Record the tablet's screen for a few seconds and find flicker: frames that differ from both neighbours while the neighbours agree.   rec_flicker.py <out dir> [seconds]
+# Record the device's screen for a few seconds and find flicker: frames that differ from both neighbours while the neighbours agree.   rec_flicker.py <out dir> [seconds]
 # Writes rec.mp4 and, for the worst frames, PNGs of the frame and its predecessor.
 import os, subprocess, sys
 import av, numpy as np
 from PIL import Image
-ADB = [os.path.join(os.path.dirname(__file__), '..', 'tools', 'platform-tools', 'adb.exe'), '-s', '192.168.1.128:5555']
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from device import ADB   # noqa: E402  (devtools/device.json: the device)
 out = sys.argv[1]; secs = int(sys.argv[2]) if len(sys.argv) > 2 else 4
 os.makedirs(out, exist_ok=True); env = dict(os.environ, MSYS_NO_PATHCONV='1'); mp4 = os.path.join(out, 'rec.mp4')
 subprocess.run(ADB + ['shell', f'screenrecord --size 1520x952 --bit-rate 40000000 --time-limit {secs} /data/local/tmp/rec.mp4'], env=env, timeout=secs + 60, check=True)

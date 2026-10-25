@@ -1,9 +1,10 @@
-# Screenshot burst from the tablet and per-shot stats of one screen region, to count frames that render wrong.   burst.py <out dir> [count] [x0 y0 x1 y1 as fractions]
+# Screenshot burst from the device and per-shot stats of one screen region, to count frames that render wrong.   burst.py <out dir> [count] [x0 y0 x1 y1 as fractions]
 # Prints each shot's mean colour of the region and its difference from the burst's median shot; outliers are the bad frames.
 import os, subprocess, sys
 import numpy as np
 from PIL import Image
-ADB = [os.path.join(os.path.dirname(__file__), '..', 'tools', 'platform-tools', 'adb.exe'), '-s', '192.168.1.128:5555']
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from device import ADB   # noqa: E402  (devtools/device.json: the device)
 out = sys.argv[1]; n = int(sys.argv[2]) if len(sys.argv) > 2 else 12
 reg = [float(v) for v in sys.argv[3:7]] if len(sys.argv) > 6 else [.5, .55, .95, .95]
 os.makedirs(out, exist_ok=True)

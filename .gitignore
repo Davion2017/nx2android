@@ -18,3 +18,7 @@ __pycache__/
 *.keystore
 prod.keys
 title.keys
+/devtools/device.json
+
+# Python environment (python -m venv .venv)
+/.venv/
