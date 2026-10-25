@@ -47,3 +47,32 @@ static inline int ov_menu_row_at(float x, float y, float W, float H) {   // the 
     int i = (int)floorf(row) - 1;
     return i >= 0 && i < OVM_N ? i : -1;
 }
+
+// ---- the text entry's keyboard (front_android.c front_text_input, drawn by gfx_vk_present.c ov_text_panel), in the pause menu's panel rectangle ----
+// Four rows of ten character keys and a row of four wide ones; p is the panel's rectangle (x, y, width, height: the window's for touches, the raster's for drawing).
+// The panel: the title (its top 13%), the text field (to 28%), the keys (to 90%), the key hints
+#define OVK_N 44
+static const char *const OVK_ROWS[4] = {"1234567890", "qwertyuiop", "asdfghjkl'", "zxcvbnm-._"};
+enum { OVK_SHIFT = 40, OVK_SPACE, OVK_DEL, OVK_OK };
+static inline void ov_kb_key(int i, const float p[4], float r[4]) {   // key i's rectangle, a small gap inside its cell
+    float pad = p[2] * 0.03f, w = p[2] - 2 * pad, top = p[1] + p[3] * 0.30f, kh = p[3] * 0.60f / 5;
+    if (i < 40) { float kw = w / 10; r[0] = p[0] + pad + (i % 10) * kw; r[1] = top + (i / 10) * kh; r[2] = kw; r[3] = kh; }
+    else { static const float x0[4] = {0, 0.2f, 0.65f, 0.8f}, ww[4] = {0.2f, 0.45f, 0.15f, 0.2f}; r[0] = p[0] + pad + x0[i - 40] * w; r[1] = top + 4 * kh; r[2] = ww[i - 40] * w; r[3] = kh; }
+    float g = kh * 0.06f; r[0] += g; r[1] += g; r[2] -= 2 * g; r[3] -= 2 * g;
+}
+static inline int ov_kb_at(float x, float y, const float p[4]) {   // the key under (x, y), -1 none
+    for (int i = 0; i < OVK_N; i++) { float r[4]; ov_kb_key(i, p, r); if (x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3]) return i; }
+    return -1;
+}
+static inline int ov_kb_char(int i, int shift) {   // a character key's character (0 for the wide keys)
+    if (i < 0 || i >= 40) return 0;
+    int c = OVK_ROWS[i / 10][i % 10]; return shift && c >= 'a' && c <= 'z' ? c - 32 : c;
+}
+static inline int ov_kb_move(int i, int dx, int dy) {   // the d-pad's move from key i (rows wrap; the wide row maps to the columns above it)
+    if (i < 0) return 0;
+    static const int wide_col[4] = {0, 4, 7, 9};   // the column each wide key sits under
+    int col = i < 40 ? i % 10 : wide_col[i - 40], row = i < 40 ? i / 10 : 4;
+    if (dy) { row = (row + dy + 5) % 5; if (row == 4) return col < 2 ? OVK_SHIFT : col < 6 ? OVK_SPACE : col < 8 ? OVK_DEL : OVK_OK; return row * 10 + col; }
+    if (row == 4) return 40 + (i - 40 + dx + 4) % 4;
+    return row * 10 + (col + dx + 10) % 10;
+}

@@ -23,6 +23,7 @@ __attribute__((weak)) float dm_overlay_scale(void) { return 1; }
 __attribute__((weak)) void dm_overlay_knob(int stick, float *dx, float *dy) { (void)stick; *dx = *dy = 0; }
 __attribute__((weak)) int64_t dm_overlay_pressed(int ctl, uint64_t bit) { (void)ctl; (void)bit; return 0; }
 __attribute__((weak)) int dm_menu_state(void) { return -1; }
+__attribute__((weak)) int dm_text_entry(char *title, int tcap, char *text, int xcap, int *sel, int *shift) { (void)title; (void)tcap; (void)text; (void)xcap; (void)sel; (void)shift; return 0; }
 static void swap_destroy(void) {
     if (g_swap) { vkDeviceWaitIdle(V.dev); for (uint32_t i = 0; i < g_nsimg; i++) if (g_sview[i]) { vkDestroyImageView(V.dev, g_sview[i], NULL); g_sview[i] = VK_NULL_HANDLE; }
                   vkDestroySwapchainKHR(V.dev, g_swap, NULL); g_swap = VK_NULL_HANDLE; }
@@ -145,9 +146,38 @@ static void ov_menu_icon(const ov_canvas *cv, float cx, float cy, float r) {   /
     float bw = r * 0.50f, bt = fmaxf(2, r * 0.11f), gap = r * 0.30f;
     for (int k = -1; k <= 1; k++) cv_rrect(cv, cx - bw, cy + k * gap - bt / 2, cx + bw, cy + k * gap + bt / 2, bt / 2, C_WHITE);
 }
+// the text entry (front_android.c front_text_input), in the pause menu's panel: the game's title for it, the field with the text and a caret, the keyboard
+// (overlay_layout.h ov_kb_*: the same rectangles the touches are tested against) with the highlighted key, and the controller's keys
+static void ov_text_panel(const ov_canvas *cv) {
+    char title[128], text[256]; int sel, shift; if (!dm_text_entry(title, sizeof title, text, sizeof text, &sel, &shift)) return;
+    float W = (float)g_ov.pw, H = (float)g_ov.ph, p[4] = {0, 0, W, H}, pad = W * 0.03f;
+    static const uint8_t bg[4] = {14, 14, 20, 236}, field[4] = {255, 255, 255, 30}, key[4] = {255, 255, 255, 26}, dim[4] = {200, 200, 210, 255};
+    cv_rrect(cv, 0, 0, W, H, H * 0.03f, bg);
+    int ts = (int)fmaxf(1, roundf(H * 0.045f / 7)), xs = (int)fmaxf(1, roundf(H * 0.06f / 7)), ks = (int)fmaxf(1, roundf(H * 0.05f / 7)), hs = (int)fmaxf(1, roundf(H * 0.036f / 7));
+    float room = W - 4 * pad;
+    while (title[0] && cv_text_w(title, ts) > room) title[strlen(title) - 1] = 0;   // a long title is cut
+    cv_text(cv, (W - cv_text_w(title, ts)) / 2, H * 0.07f, title, ts, C_WHITE);
+    cv_rrect(cv, pad, H * 0.14f, W - pad, H * 0.27f, H * 0.02f, field);
+    char shown[260]; snprintf(shown, sizeof shown, "%s_", text);   // the caret
+    const char *s = shown; while (*s && cv_text_w(s, xs) > room) s++;   // the end of a long text
+    cv_text(cv, 2 * pad, H * 0.205f, s, xs, C_WHITE);
+    static const char *wide[4] = {"Shift", "Space", "Del", "OK"};
+    for (int i = 0; i < OVK_N; i++) {
+        float r[4]; ov_kb_key(i, p, r);
+        int on = i == sel || (i == OVK_SHIFT && shift);
+        cv_rrect(cv, r[0], r[1], r[0] + r[2], r[1] + r[3], r[3] * 0.18f, i == sel ? C_ACCENT : on ? field : key);
+        char one[2] = {(char)ov_kb_char(i, shift), 0}; const char *l = i < 40 ? one : wide[i - 40];
+        int ls = ks; while (ls > 1 && cv_text_w(l, ls) > r[2] * 0.85f) ls--;   // a wide key's word fits inside it
+        cv_text(cv, r[0] + (r[2] - cv_text_w(l, ls)) / 2, r[1] + r[3] / 2, l, ls, i == OVK_OK && i != sel ? C_ACCENT : C_WHITE);
+    }
+    const char *k = "A key  B delete  Y shift  + OK  - cancel";   // one line, centred, smaller until it fits
+    while (hs > 1 && cv_text_w(k, hs) > W - 2 * pad) hs--;
+    cv_text(cv, (W - cv_text_w(k, hs)) / 2, H * 0.95f, k, hs, dim);
+}
 static void ov_panel(int st) {   // the pause menu, for menu state st (dm_menu_state), into the panel's rows of the upload buffer
     ov_canvas cv = {g_ov.px, g_ov.w, 0, g_ov.h + g_ov.sh, g_ov.pw, g_ov.ph};
     for (uint32_t y = 0; y < g_ov.ph; y++) memset(g_ov.px + 4 * ((size_t)(cv.y0 + y) * g_ov.w), 0, (size_t)g_ov.pw * 4);
+    if (st >> 16 & 1) { ov_text_panel(&cv); return; }   // a text entry is open (dm_menu_state)
     float W = (float)g_ov.pw, u = (float)g_ov.ph / ((OVM_N + 1) * OV_MENU_ROW + 2 * OV_MENU_PAD), pad = OV_MENU_PAD * u, rh = OV_MENU_ROW * u;
     static const uint8_t bg[4] = {14, 14, 20, 236}, line[4] = {255, 255, 255, 40}, hi[4] = {255, 255, 255, 34}, dim[4] = {200, 200, 210, 255}, off[4] = {80, 80, 92, 255}, knob_off[4] = {215, 215, 222, 255};
     cv_rrect(&cv, 0, 0, W, (float)g_ov.ph, rh * 0.18f, bg);
