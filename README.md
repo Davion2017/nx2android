@@ -9,7 +9,7 @@ This is the Android port of [nxnative](https://github.com/seedds/nxnative), whic
 | Game | Title ID | Status |
 |---|---|---|
 | NEO: The World Ends with You | `010043B013C5C000` | playable on a Lenovo Legion Y700 (Snapdragon 8 Elite, Adreno 830), update 1.03 |
-| Viractal: Will You Trust Your Party? | `0100FD501F95A000` | boots to the title screen on the Legion Y700, update 1.4.5 (provisional profile) |
+| Viractal: Will You Trust Your Party? | `0100FD501F95A000` | playable on the Legion Y700 (board game turns; names stay the defaults), update 1.4.5 |
 
 Each game is a profile in `nxnative/dm/games/<title ID>/` with an `android.tsv`. The device's GPU must read BC-compressed textures (Adreno, Xclipse; not Mali or PowerVR).
 

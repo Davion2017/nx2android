@@ -1,9 +1,10 @@
 # Viractal: Will You Trust Your Party? on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
 # Unity on SDK 21; game.tsv started as upstream's provisional profile and was checked by hand.
-# On the Y700 (2026-10-25): title at 30 fps, the Game Room fully drawn (its compute shaders read since unityfs.py has Unity 6.3's ComputeShader layout), and
-# into the story's opening scene, where it stops taking input at the line "Hey! Not that way!" while it keeps drawing and playing sound: the next bring-up step.
-# Every shader the split finds translates (25,555); advanced blend mode 21 is not implemented.
-status	boots
+# On the Y700 (2026-10-25), driven with DM_CTL: title, the Game Room (its compute shaders read since unityfs.py has Unity 6.3's ComputeShader layout), the story's
+# opening (Baphoco's poster), the board game's setup (controller settings, contracts, jobs) and its first turns: dice, moves, tile events, the next player.
+# 30 fps, about 1.9 GB, nothing skipped over 12 minutes. Gaps: names stay the defaults (the Android front end has no on-screen keyboard yet,
+# front_text_input); advanced blend mode 21 is not implemented (the state blends with its plain blend functions).
+status	playable
 tested	v131072 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.viractal
 orientation	landscape
