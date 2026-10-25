@@ -55,7 +55,7 @@ Per-build knowledge stays where upstream keeps it: the rewriter's cuts in `patch
 | inputs | Find the base game, updates and DLC (NSP / XCI), match the profile, pick the version | |
 | extract | `nx_extract` (built with the .NET SDK) | `extract/<version>/{ExeFS,RomFS}`, `aoc/` |
 | rewrite | `patch_nso.py` with `DM_TARGET=android` | `android/patched_<version>/` |
-| shaders | `shader_split.py`, then `shader_vk.py` (SPIR-V) | `shader/pkg`, `android/shaders.dmsv` |
+| shaders | `shader_split.py`, then `shader_vk.py` (SPIR-V) with the translator built from the repository's source (`dm/gfx/tools/dmsh_xlate` over `dm/third_party/ryujinx`, once per player in their nx2android folder) | `shader/pkg`, `android/shaders.dmsv` |
 | host | `dm/android/build.py --release` with the player's NDK | `android/host/libdmhost.so` |
 | apk | `dm/android/apk/mkapk.py`, signed with the player's own key | `<out>/<App>.apk` |
 | data | The files the app reads from `/sdcard/Android/data/<package>/files` | `<out>/<App>-data/{mods,RomFS,aoc,shaders.dmsv,env.txt,settings.txt}` |

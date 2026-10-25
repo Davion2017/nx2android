@@ -24,7 +24,9 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                     {
                         bool isWorthPropagating = propVar.Uses.Count == 1 || IsWorthPropagating(assignment.Source);
 
-                        if (propVar.Defs.Count == 1 && isWorthPropagating)
+                        // nxnative: a call's arguments stay the locals StructuredProgram copied them to (SPIR-V passes them by pointer). Propagated, the call
+                        // kept a local whose declaration was removed (KeyNotFoundException in CodeGen/Spirv GetLocalPointer: 1,894 shaders of Viractal)
+                        if (propVar.Defs.Count == 1 && isWorthPropagating && !UsedByCall(propVar))
                         {
                             PropagateExpression(propVar, assignment.Source);
                         }
@@ -40,6 +42,19 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
             }
 
             RemoveEmptyBlocks(mainBlock);
+        }
+
+        private static bool UsedByCall(AstOperand propVar)
+        {
+            foreach (IAstNode use in propVar.Uses)
+            {
+                if (use is AstOperation operation && operation.Inst == Instruction.Call)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static bool IsWorthPropagating(IAstNode source)
