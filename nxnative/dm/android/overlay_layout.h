@@ -5,24 +5,9 @@
 #include "dm_input.h"
 enum { OV_STICK_L, OV_STICK_R, OV_BUTTON, OV_DPAD, OV_MENU };   // OV_MENU: the menu button (always shown, 70%): pauses the game and opens the settings
 typedef struct { int kind; float x, y, r; uint64_t btn; const char *label; } ov_ctl;
-static const ov_ctl OV_CTLS[] = {
-    {OV_STICK_L, 0.12f, 0.70f, 0.12f, 0, ""},
-    {OV_STICK_R, 0.74f, 0.80f, 0.09f, 0, ""},
-    {OV_BUTTON, 0.935f, 0.60f, 0.050f, DM_BTN_A, "A"},
-    {OV_BUTTON, 0.885f, 0.72f, 0.050f, DM_BTN_B, "B"},
-    {OV_BUTTON, 0.885f, 0.48f, 0.050f, DM_BTN_X, "X"},
-    {OV_BUTTON, 0.835f, 0.60f, 0.050f, DM_BTN_Y, "Y"},
-    {OV_BUTTON, 0.06f, 0.12f, 0.050f, DM_BTN_L, "L"},
-    {OV_BUTTON, 0.06f, 0.30f, 0.050f, DM_BTN_ZL, "ZL"},
-    {OV_BUTTON, 0.94f, 0.12f, 0.050f, DM_BTN_R, "R"},
-    {OV_BUTTON, 0.94f, 0.30f, 0.050f, DM_BTN_ZR, "ZR"},
-    {OV_BUTTON, 0.42f, 0.08f, 0.040f, DM_BTN_MINUS, "-"},
-    {OV_BUTTON, 0.58f, 0.08f, 0.040f, DM_BTN_PLUS, "+"},
-    {OV_MENU, 0.50f, 0.08f, 0.036f, 0, ""},
-    {OV_DPAD, 0.30f, 0.80f, 0.10f, 0, ""},
-    {OV_BUTTON, 0.20f, 0.42f, 0.040f, DM_BTN_LS, "LS"},
-    {OV_BUTTON, 0.62f, 0.62f, 0.040f, DM_BTN_RS, "RS"},
-};
+// The layout: dm/android/overlay_default.tsv with the game profile's moves (android.tsv overlay rows), compiled by build.py into android_profile.h
+#include "android_profile.h"
+static const ov_ctl OV_CTLS[] = {DM_AOV_TABLE};
 #define OV_N ((int)(sizeof OV_CTLS / sizeof *OV_CTLS))
 #define OV_KNOB 0.42f        // a stick's knob radius, of the stick's
 #define OV_MENU_ALPHA 0.70f

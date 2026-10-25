@@ -329,6 +329,9 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     snprintf(p, sizeof p, "%s/temp", act->internalDataPath); mkdir(p, 0700); setenv("DM_TEMP", p, 0);
     snprintf(p, sizeof p, "%s/shaders.dmsv", g_root); setenv("DM_VK_SHADERS", p, 0);
     snprintf(p, sizeof p, "%s/env.txt", g_root); env_file(p);
+#ifdef DM_RELEASE
+    unsetenv("DM_CTL");   // a release build takes no remote key presses (the control file is a development tool)
+#endif
     settings_load(); dm_haptics_android_start(act, atomic_load(&g_set_rumble));
     LOG("NX2A host on Android: files %s, saves %s", g_root, act->internalDataPath);
     pthread_t t; pthread_create(&t, NULL, input_thread, NULL); pthread_detach(t);
