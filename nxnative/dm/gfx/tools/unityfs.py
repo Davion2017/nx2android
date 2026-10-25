@@ -205,11 +205,17 @@ ComputeShaderCB: string name; int byteSize; vector<data:ComputeShaderParam> para
 ComputeShaderPlatformVariant: int targetRenderer; int targetLevel; vector<data:ComputeShaderKernelParent> kernels; vector<data:ComputeShaderCB> constantBuffers; bool! resourcesResolved
 ComputeShader: string m_Name; vector<data:ComputeShaderPlatformVariant> variants
 '''
+# The Unity 6.3 ComputeShader (Viractal: Will You Trust Your Party?, Unity 6000.3.12f1: in Data/globalgamemanagers.assets and Data/Resources/unity default resources, which carry
+# no type trees), from 6000.3.12f1's type tree as AssetRipper's TypeTreeDumps records it: 2022.3's with one field more, ComputeShaderResource.resType, at its end
+COMPUTE_6000_3 = COMPUTE_2022_3.replace('ComputeShaderResource: string name; string generatedName; int bindPoint; int samplerBindPoint; int texDimension\n',
+                                        'ComputeShaderResource: string name; string generatedName; int bindPoint; int samplerBindPoint; int texDimension; int resType\n')
+assert COMPUTE_6000_3 != COMPUTE_2022_3
 CLASS_COMPUTE_SHADER = 72
 KNOWN_TREES = {(CLASS_SHADER, bytes.fromhex('ea424a5fc1e48db62144df956f9e1005')): ('Shader', SHADER_2022_3),
                (CLASS_SHADER, bytes.fromhex('a30e3dcf6c6d25153d6f64e5e41caf4e')): ('Shader', SHADER_2020_3),
                (CLASS_SHADER, bytes.fromhex('8db760073e1392061e4a36995f0735af')): ('Shader', SHADER_2018_3),
-               (CLASS_COMPUTE_SHADER, bytes.fromhex('bfdf63ab0ce84d5a2c765ee560d90fe7')): ('ComputeShader', COMPUTE_2022_3)}
+               (CLASS_COMPUTE_SHADER, bytes.fromhex('bfdf63ab0ce84d5a2c765ee560d90fe7')): ('ComputeShader', COMPUTE_2022_3),
+               (CLASS_COMPUTE_SHADER, bytes.fromhex('43a0948a3f403068c0b31bff90ba0c9a')): ('ComputeShader', COMPUTE_6000_3)}
 
 def _split_top(s, sep):   # s split at sep outside <> and ()
     out, depth, cur = [], 0, ''

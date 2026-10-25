@@ -331,6 +331,7 @@ static void bind_program(const p_bind_program *bp) {
     if (S.prog) for (unsigned i = 0; i < 6; i++) {
         uint8_t k[8]; if (!prog_key(S.prog, i, k)) break;
         uint64_t kk = key64(k); int st = kk ? vk_shader_stage(kk) : -1;
+        if (kk && st < 0) { static int n; if (n++ < 16) VKLOG("[RED] program shader %016llx (position %u) is not in the bundle", (unsigned long long)kk, i); }   // the draw or dispatch is skipped
         if (st < 0 || st > 5 || !(mask >> st & 1)) continue;
         S.sh[st] = vk_shader(kk, st);
     }
