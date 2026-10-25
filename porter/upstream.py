@@ -20,6 +20,8 @@ def _load_nsp():
     m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
     m.nacp, m.pg = nacp, profile_guess   # module globals its main() sets
     if sys.platform != 'darwin': m.can_clone = lambda d: False   # APFS clones (clonefile) exist only on a Mac
+    files = m.profile_files   # the shader stages' reuse keys: android.tsv changes no shader (an edit to it re-split and re-translated Viractal's 25,464 shaders)
+    m.profile_files = lambda g: [p for p in files(g) if p.name != 'android.tsv']
     return m
 
 
