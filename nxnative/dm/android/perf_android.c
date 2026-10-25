@@ -95,12 +95,13 @@ static int64_t g_work_start;
 static const int64_t STEPS[] = {16666667, 25000000, 33333333};   // 60, 40, 30 fps
 static int g_step = 0, g_adapt = -1; static int64_t g_work_hist[64]; static int g_nwork;
 static int64_t g_last_change, g_last_up, g_up_hold = 2000000000; static int g_ok_frames; static uint64_t g_game_period;   // the period the game asks for, before the adaptive step
-static int64_t work_p95(void) {   // the 95th percentile of the last 64 frames' work
+static int64_t work_pct(int q) {   // the q-th percentile of the last 64 frames' work
     int n = g_nwork < 64 ? g_nwork : 64; if (n < 16) return 0;
     int64_t v[64]; memcpy(v, g_work_hist, sizeof(int64_t) * (size_t)n);
     for (int i = 1; i < n; i++) { int64_t x = v[i]; int j = i - 1; while (j >= 0 && v[j] > x) { v[j + 1] = v[j]; j--; } v[j + 1] = x; }
-    return v[(n * 95) / 100];
+    return v[(n * q) / 100];
 }
+static int64_t work_p95(void) { return work_pct(95); }
 uint64_t dm_present_period_adapt(uint64_t period) {
     if (g_adapt < 0) { const char *e = getenv("DM_ADAPTIVE_FPS"); g_adapt = !(e && !atoi(e)); }
     if (!g_adapt || !period) return period;
@@ -108,18 +109,28 @@ uint64_t dm_present_period_adapt(uint64_t period) {
     int64_t want = STEPS[g_step];
     return (uint64_t)want > period ? (uint64_t)want : period;   // never faster than the game asks
 }
+static int fps_pin(void) {   // a DM_CTL "env DM_FPS_PIN=40" line holds that step (60, 40 or 30; anything else lets the rate adapt again): tests
+    static unsigned k; static int pin = -1; if (k++ % 30) return pin;
+    const char *e = getenv("DM_FPS_PIN"); int v = e ? atoi(e) : 0, st = v == 60 ? 0 : v == 40 ? 1 : v == 30 ? 2 : -1;
+    if (st != pin) { pin = st; LOG("[perf] adaptive frame rate %s", st < 0 ? "free again" : "pinned"); }
+    return pin;
+}
 static void adapt_frame(int64_t work, int64_t now) {
     if (!g_adapt) return;
     g_work_hist[g_nwork++ % 64] = work;
-    { static unsigned k; if (++k % 600 == 0) LOG("[perf] adaptive frame rate: %.0f fps, frame work p95 %.1f ms (last %.1f ms)", 1e9 / STEPS[g_step], work_p95() / 1e6, work / 1e6); }
-    if (now - g_last_change < 2000000000) return;   // 2 s between changes
-    int64_t p95 = work_p95(); if (!p95) return;
+    { static unsigned k; if (++k % 600 == 0) LOG("[perf] adaptive frame rate: %.0f fps, frame work p50 %.1f / p90 %.1f / p95 %.1f ms (last %.1f ms)", 1e9 / STEPS[g_step], work_pct(50) / 1e6, work_pct(90) / 1e6, work_p95() / 1e6, work / 1e6); }
+    int pin = fps_pin(); if (pin >= 0) { if (g_step != pin) { g_step = pin; g_last_change = now; } return; }
+    // Judged on the 90th percentile of the last 64 frames' work, from 4 s after a change: the GPU and CPU clocks take a few seconds to rise for a shorter
+    // period, and with the 95th percentile against 95% of the period NEO's crowd fell back from 40 to 30 fps within 2 s every time, though pinned at
+    // 40 it held 24.4 ms frames (p90 work 24.9 ms, p95 frame time 34-36 ms: no worse than its 30 fps p95 of 35-37 ms)
+    if (now - g_last_change < 4000000000ll) return;
+    int64_t p90 = work_pct(90); if (!p90) return;
     int nsteps = (int)(sizeof STEPS / sizeof *STEPS);
-    if (g_step + 1 < nsteps && p95 > STEPS[g_step] * 95 / 100) {
+    if (g_step + 1 < nsteps && p90 > STEPS[g_step] * 105 / 100) {
         // back down soon after a step up: the next try waits twice as long (up to a minute), so the rate does not swing between two steps
         if (g_last_up && now - g_last_up < 10000000000ll) { g_up_hold = g_up_hold * 2 > 60000000000ll ? 60000000000ll : g_up_hold * 2; }
-        g_step++; g_last_change = now; g_nwork = 0; g_ok_frames = 0; LOG("[perf] adaptive frame rate: %.0f fps (frames p95 %.1f ms)", 1e9 / STEPS[g_step], p95 / 1e6); return; }
-    if (g_step > 0 && p95 < STEPS[g_step - 1] * 80 / 100) { if (++g_ok_frames > 120 && now - g_last_change >= g_up_hold) { g_step--; g_last_change = g_last_up = now; g_nwork = 0; g_ok_frames = 0; LOG("[perf] adaptive frame rate: %.0f fps (frames p95 %.1f ms)", 1e9 / STEPS[g_step], p95 / 1e6); } }
+        g_step++; g_last_change = now; g_nwork = 0; g_ok_frames = 0; LOG("[perf] adaptive frame rate: %.0f fps (frames p90 %.1f ms)", 1e9 / STEPS[g_step], p90 / 1e6); return; }
+    if (g_step > 0 && p90 < STEPS[g_step - 1] * 85 / 100) { if (++g_ok_frames > 120 && now - g_last_change >= g_up_hold) { g_step--; g_last_change = g_last_up = now; g_nwork = 0; g_ok_frames = 0; LOG("[perf] adaptive frame rate: %.0f fps (frames p90 %.1f ms)", 1e9 / STEPS[g_step], p90 / 1e6); } }
     else g_ok_frames = 0;
 }
 // hle_nvn.c, the first acquire after a present, right after its pacing wait. A frame's work is the time between two presents less that wait: what the

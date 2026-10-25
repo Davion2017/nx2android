@@ -194,6 +194,28 @@ static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {
 }
 static int packaged_tex(const tex_t *t);
 static void vk_tex_view_drop_all(vkimg_t *im);
+// Images over the same memory with different descriptions (the storage key differs) are separate Vulkan images: on the Switch a texture sees what another
+// one over its memory rendered, here it does not. They are linked both ways at creation (up to 8 each), and a sampled image older than an overlapping
+// image's last rendering is logged ([alias] stale read), to find what a game reinterprets
+static uint64_t g_wseq;
+static void alias_link(vkimg_t *im) {
+    for (uint32_t i = 0; i < g_by_key.cap; i++) {
+        vkimg_t *o = g_by_key.vals[i]; if (!o || o == im || o->pool != im->pool || o->off >= im->off + im->size || im->off >= o->off + o->size) continue;
+        if (im->novl < 8 && o->novl < 8) { im->ovl[im->novl++] = o; o->ovl[o->novl++] = im; }
+    }
+}
+static void alias_unlink(vkimg_t *im) {
+    for (int i = 0; i < im->novl; i++) { vkimg_t *o = im->ovl[i]; for (int j = 0; j < o->novl; j++) if (o->ovl[j] == im) { o->ovl[j] = o->ovl[--o->novl]; break; } }
+    im->novl = 0;
+}
+static void alias_check(vkimg_t *im) {   // im is about to be sampled
+    for (int i = 0; i < im->novl; i++) {
+        vkimg_t *o = im->ovl[i]; if (o->wseq <= im->wseq || o->wseq <= im->rseen) continue;
+        im->rseen = o->wseq;
+        static int n; if (n++ < 200) VKLOG("[alias] stale read: %ux%u fmt %#x levels %u at %+lld..%+lld sampled, but %ux%u fmt %#x levels %u at %+lld..%+lld rendered over its memory later",
+            im->w, im->h, im->nvn_format, im->levels, (long long)im->off, (long long)(im->off + im->size), o->w, o->h, o->nvn_format, o->levels, (long long)o->off, (long long)(o->off + o->size));
+    }
+}
 vkimg_t *vk_tex(const tex_t *t) {
     if (!t || !t->serial || t->magic != MAGIC('T', 'E', 'X', 0)) return NULL;
     const vkfmt_t *f = vk_fmt(t->d.format);
@@ -204,7 +226,12 @@ vkimg_t *vk_tex(const tex_t *t) {
     pthread_mutex_lock(&g_img_mu);
     vkimg_t *im = keyed ? nvn_hm_get(&g_by_key, &k) : nvn_hm_get(&g_by_serial, &t->serial);
     int fresh = 0;
-    if (!im) { im = img_new(t, f); if (!im) { pthread_mutex_unlock(&g_img_mu); return NULL; } if (keyed) nvn_hm_put(&g_by_key, &k, im); else nvn_hm_put(&g_by_serial, &t->serial, im); fresh = 1; }
+    if (!im) {
+        im = img_new(t, f); if (!im) { pthread_mutex_unlock(&g_img_mu); return NULL; }
+        im->pool = k.pool; im->off = t->off; im->size = (int64_t)t->L.size; im->flags = t->d.flags;
+        if (keyed) { alias_link(im); nvn_hm_put(&g_by_key, &k, im); } else nvn_hm_put(&g_by_serial, &t->serial, im);
+        fresh = 1;
+    }
     pthread_mutex_unlock(&g_img_mu);
     if (!vk_sub_open()) return fresh ? NULL : im;   // looked up outside a submission (present): nothing can be recorded, a new image has no contents yet
     if (t->mem && packaged_tex(t)) {
@@ -224,7 +251,7 @@ void vk_tex_drop_pool(const void *pool) {   // the pool is finalized: its textur
         akey k; memcpy(&k, g_by_key.keys + (size_t)i * g_by_key.klen, sizeof k);
         if (k.pool != (uint64_t)(uintptr_t)pool) continue;
         vkimg_t *im = g_by_key.vals[i]; nvn_hm_del(&g_by_key, &k); i = (uint32_t)-1;   // the table was rehashed by the delete: rescan
-        vk_tex_view_drop_all(im); vk_defer_free_image(im->img, im->mem); free(im);
+        alias_unlink(im); vk_tex_view_drop_all(im); vk_defer_free_image(im->img, im->mem); free(im);
     }
     pthread_mutex_unlock(&g_img_mu);
 }
@@ -268,6 +295,7 @@ static VkComponentSwizzle apply(VkComponentSwizzle outer, const VkComponentMappi
 VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, int as_attachment, vkimg_t **img_out) {
     vkimg_t *im = vk_tex(t); if (img_out) *img_out = im;
     if (!im) return VK_NULL_HANDLE;
+    if (as_attachment) im->wseq = ++g_wseq; else if (im->novl) alias_check(im);
     const vkfmt_t *f = vk_fmt(vw && vw->set_format ? vw->format : t->d.format); if (!f) f = vk_fmt(t->d.format);
     uint32_t lv0 = vw && vw->set_levels ? vw->base_level : 0, nlv = vw && vw->set_levels ? vw->nlevels : im->levels - lv0;
     uint32_t ly0 = vw && vw->set_layers ? vw->min_layer : 0, nly = vw && vw->set_layers ? vw->nlayers : im->layers - ly0;
