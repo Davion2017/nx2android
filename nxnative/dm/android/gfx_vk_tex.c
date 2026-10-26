@@ -227,7 +227,7 @@ extern uint64_t g_tex_frame;   // presents so far, for the packaged textures' la
 // last EVICT_KEEP presents go (their memory now holds another texture; one drawn again is made and filled again). Called with g_img_mu held
 enum { EVICT_KEEP = 60 };
 static uint64_t g_img_n, g_img_bytes, g_img_evicted;   // live images and their bytes, images evicted so far (vk_tex_sweep's line)
-static void img_drop(vkimg_t *im) { if (im->packaged && !im->pkg_released && im->pkg_mem) nvn_dirty_release(im->pkg_mem, im->pkg_len); g_img_n--; g_img_bytes -= im->size > 0 ? (uint64_t)im->size : 0; alias_unlink(im); vk_tex_view_drop_all(im); if (im->sub) vk_defer_free_image_sub(im->img, im->sub); else vk_defer_free_image(im->img, im->mem); free(im); }
+static void img_drop(vkimg_t *im) { vk_lrz_forget(im); if (im->packaged && !im->pkg_released && im->pkg_mem) nvn_dirty_release(im->pkg_mem, im->pkg_len); g_img_n--; g_img_bytes -= im->size > 0 ? (uint64_t)im->size : 0; alias_unlink(im); vk_tex_view_drop_all(im); if (im->sub) vk_defer_free_image_sub(im->img, im->sub); else vk_defer_free_image(im->img, im->mem); free(im); }
 static void evict_overlaps(uint64_t pool, int64_t off, int64_t size) {
     akey ks[64]; int n = 0;
     for (uint32_t i = 0; i < g_by_key.cap && n < 64; i++) {
@@ -368,6 +368,7 @@ VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, 
     if (!im) return VK_NULL_HANDLE;
     if (as_attachment) im->wseq = ++g_wseq; else if (im->novl) alias_check(im);
     vk_watch(im, as_attachment ? "attachment" : "sampled or image");
+    if (!as_attachment) { void vk_texdump_note(vkimg_t *im); vk_texdump_note(im); }
     const vkfmt_t *f = vk_fmt(vw && vw->set_format ? vw->format : t->d.format); if (!f) f = vk_fmt(t->d.format);
     uint32_t lv0 = vw && vw->set_levels ? vw->base_level : 0, nlv = vw && vw->set_levels ? vw->nlevels : im->levels - lv0;
     if (lv0 >= im->levels) lv0 = im->levels - 1; if (!nlv || lv0 + nlv > im->levels) nlv = im->levels - lv0;
@@ -485,6 +486,13 @@ void mtl_reg_samp(int sid, const samp_par *sp) {
     pthread_mutex_unlock(&g_rmu);
 }
 static nvn_hmap g_samp_cache = {.klen = sizeof(samp_par)};   // samp_par → VkSampler (VkSamplers are never destroyed: few distinct parameter sets)
+void vk_samp_describe(int sid, char *out, size_t n) {   // the registered parameters (traces)
+    pthread_mutex_lock(&g_rmu);
+    if (sid > 0 && sid < g_nsreg && g_sreg_ok[sid]) { const samp_par *p = &g_sreg[sid]; snprintf(out, n, "sampler %d: wrap %d %d %d min %d mag %d lod %g..%g bias %g aniso %g cmp %d/%d red %d border %g %g %g %g", sid, p->ws, p->wt, p->wr,
+        p->minf, p->magf, p->lod_min, p->lod_max, p->lod_bias, p->aniso, p->cmp_mode, p->cmp_func, p->reduction, p->border[0], p->border[1], p->border[2], p->border[3]); }
+    else snprintf(out, n, "sampler %d: not registered (dummy)", sid);
+    pthread_mutex_unlock(&g_rmu);
+}
 VkSampler vk_samp_by_id(int sid) {
     pthread_mutex_lock(&g_rmu);
     VkSampler s = VK_NULL_HANDLE;

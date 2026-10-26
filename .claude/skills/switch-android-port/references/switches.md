@@ -16,12 +16,14 @@ The source of each switch is in `nxnative/dm/android/` unless noted. Check the c
 | `DM_VK_PASSDUMP=1` / `=N` | live | dump each pass's first colour target and its depth (PPM, NaN counts, depth stretched) for one frame; `=N` waits N−1 presents first. **The dump adds barriers and depth reads, which can hide bugs** |
 | `DM_VK_TRACE_PASS=-2` / `=n` | live | `-2` lists one submission's passes; `n` logs every draw of pass n once (targets, depth target, textures, pipeline state) |
 | `DM_VK_TRACE_SIZE=WxH[:fmt[:fmt]][#n]` | live | trace the (n+1)th pass whose first colour target has that size (and formats): pass numbers move by tens from frame to frame |
+| `DM_VK_TRACE_FRAME=WxH[:fmt[:fmt]]` | live, one submission | trace every pass of the next submission whose targets match (a whole effect chain in one log); trace lines also describe each sampler (wrap, filters, LOD, border) |
 | `DM_VK_PASSDUMP_SKIP=n` / `=WxH`, `DM_VK_PASSDUMP_SIZE=WxH[,WxH]` | read when a dump starts | skip the first n passes, or start at the first pass of that size (depth included); only passes of those sizes (colour only) |
 | `DM_VK_PASSDUMP_FRAMES=N` | read when a dump starts | keep dumping for N presents in a row (up to 96 dumps; the log names each dump's present): with `DM_VK_PASSDUMP_SIZE`, catches an effect that is wrong in single frames |
-| `DM_VK_PASSDUMP_DEPTH=1` | read at each pass | with `DM_VK_PASSDUMP_SIZE`, the size-filtered passes' depth too |
+| `DM_VK_PASSDUMP_DEPTH=1` | read at each pass | with `DM_VK_PASSDUMP_SIZE`, the size-filtered passes' depth too; every depth dump also writes its raw values as float32 (`<name>.f32` beside the PPM) |
+| `DM_VK_TEXDUMP=<pool hex>+<offset hex>` | read when a dump starts | during the dump, the first sampled image at that pool offset (the trace prints both) is blitted to RGBA16F and dumped with the passes (level 0, up to 6 layers, pass number −100 − layer): a compressed texture such as a BC6H cube map, decoded by the GPU |
 | `DM_VK_NOPCACHE=1` | start-up (`gfx_vk_core.c`) | start with an empty Vulkan pipeline cache (the saved one is ignored; app-owned files cannot be deleted over adb) |
 | `DM_VK_WATCH=<pool offset hex>[#n]` | live | log the next n uses of images at that pool offset (attachment, sampled, copy) with present and pass numbers: who writes what a pass reads |
-| `DM_VK_UBO_LOG=<shader key hex>[#n]` | live | log the next n uniform buffers that shader reads (every word up to 512 bytes, a hash; for register 0 of a vertex shader also its vertex stream 0). Use with `DM_VK_X_NOSETC=1`, or reused descriptor sets hide draws |
+| `DM_VK_UBO_LOG=<shader key hex>[#n]` | live | log the next n uniform buffers that shader reads (every word up to 512 bytes, a hash; for register 0 of a vertex shader also its vertex stream 0; for an indexed draw, the index data's hash and range, and once per index data every index and vertex). Use with `DM_VK_X_NOSETC=1`, or reused descriptor sets hide draws. With a primitive-ID fragment shader through `DM_VK_SPV_ALT` it shows which triangles a draw lost (XC3's cloud dome) |
 | `DM_VK_SPV_DIR=<dir>` (start-up) + `DM_VK_SPV_ALT=1` (live) | | pipelines made while `ALT` is on use `<dir>/<key>.spv` in place of the bundle's code where the file exists (same bindings), so two compilations of a shader compare in one run (e.g. the translator's GLSL through `glslc`, or a patched module) |
 | `DM_VK_PASS_TIMES=1` | start-up | GPU timestamps around every pass; the per-frame line lists the costliest passes. Disturbs Adreno's binning: compare runs only |
 | `DM_SLOWFRAME=1` | start-up (`gfx/nvn/hle_nvn.c`) | one `[slowframe]` line per dropped frame with a breakdown (frame, work, NVN, wait, thread and process CPU) |
@@ -40,7 +42,7 @@ The source of each switch is in `nxnative/dm/android/` unless noted. Check the c
 | `DM_VK_SUBMIT_SPLIT=0` | live | don't submit the pieces early |
 | `DM_VK_X_CUTANY=1` | live | cut before any pass (the old rule that caused LRZ flicker) |
 | `DM_VK_X_NOGS=1` | live | leave out draws with a geometry shader (A/B their GPU cost: Xenoblade Chronicles 3's effects, 0.7 ms of 22 in a battle) |
-| `DM_VK_LRZ_TOUCH=0` | live | drop the one-texel depth read before passes that load a depth-stencil buffer (brings the menu-wipe flicker back) |
+| `DM_VK_LRZ_TOUCH=0` | live | drop the LRZ touches: the one-texel depth read before passes that load a depth-stencil buffer (brings NEO's menu-wipe flicker back) and the texel written back into the depth buffer a pass switches away from (brings XC3's cloud-layer drop-outs back) |
 | `DM_VK_FLIPY=0` | live | the old clip-space y convention (pictures flip) |
 | `DM_VK_X_NOBAR`, `X_DEPTH`, `X_COLOR` | live | cost measurements that **draw wrong**: no barrier before a pass; depth neither loaded nor stored; colour not loaded unless cleared |
 | `DM_VK_X_NOSETC`, `X_NODRVC`, `X_LANDCUT`, `X_NOKEEP`, `X_NOSHC` | live | flicker experiments: no descriptor-set reuse; no driver-segment reuse; deferred uniform updates land at each cut; no pass kept for repeated targets; no uniform-shadow reuse |
