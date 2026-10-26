@@ -1,0 +1,12 @@
+# Xenoblade Chronicles 3 on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Monolith Soft's engine on SDK 12.3.9, update 2.2.0 with its four DLC. On the Y700 (2026-10-26), driven with DM_CTL: boot, the title (lit dragon, foreground clouds),
+# a new game, the opening movie (VP9) and skipping it (hold X), the first battles, the tutorials and the story to Torchlight Hill, saving and loading, and the pause
+# menu's Performance / Resolution switch: 30 fps held (frame p50 33.3 ms, p95 34-35 ms) over 15 minutes of walking Everlight Plain, mappings steady at 15,000-19,000
+# and GPU memory steady, no audio underruns. Heavy views of Torchlight Hill take about 40 ms a frame. Known issue: the sky's cloud layer (one dome draw into a
+# 200x112 target) is drawn only in some frames and drops out for a few frames at a time, worst while the camera turns; its inputs are the same in good and bad frames.
+# Hundreds of its effect and model shaders are in no game file: the app captures each one a draw misses, and the next port with --install translates them
+# (155 so far, from the opening and the first field); until then such draws are skipped.
+status	playable
+tested	v655360 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.xc3
+orientation	landscape
