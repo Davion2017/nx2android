@@ -1,6 +1,7 @@
 # adb for installing a port: the device list, installing the APK, and pushing the data pack in short transfers. Big pushes over one adb connection wedge adbd on some
 # devices (a 6 GB RomFS), so small files go in batches and big files in 64 MB pieces that the device joins; a rerun resumes (files already at their size are skipped,
-# pieces already in place are kept). Pushes use -Z: compressing them took adbd down.
+# pieces already in place are kept). The port's own outputs are also compared by MD5: a rewriter cut changes a module without changing its size, and Unpacking's sdk cuts never
+# reached the device until they were. Pushes use -Z: compressing them took adbd down.
 import contextlib, hashlib, os, shlex, shutil, subprocess, tempfile, time
 from pathlib import Path
 
@@ -134,14 +135,26 @@ class Adb:
             if sz.isdigit(): have[name[2:] if name.startswith('./') else name] = int(sz)
         return have
 
-    def push_tree(self, local, remote, chunk=64 << 20, skip=(), keep=(), progress=None):
-        """local folder → remote folder. skip: relative paths not pushed; keep: relative paths pushed only when the device has none (the player's settings).
+    def remote_md5(self, rdir, rels):   # {relative path: MD5} of those files under rdir (missing ones left out)
+        out, q = {}, shlex.quote(rdir)
+        for i in range(0, len(rels), 64):
+            for ln in self.shell(f'cd {q} && md5sum ' + ' '.join(shlex.quote(r) for r in rels[i:i + 64]) + ' 2>/dev/null; true').splitlines():
+                h, _, name = ln.partition('  ')
+                if len(h) == 32: out[name] = h
+        return out
+
+    def push_tree(self, local, remote, chunk=64 << 20, skip=(), keep=(), verify=None, progress=None):
+        """local folder → remote folder. skip: relative paths not pushed; keep: relative paths pushed only when the device has none (the player's settings);
+        verify(rel): files whose content can change at the same size (the rewritten modules: a rewriter cut keeps the module's size), pushed again when their MD5 differs.
         progress(done_bytes, total_bytes, note) after each transfer. Returns the bytes pushed"""
         local, remote = Path(local), remote.rstrip('/')
         files = sorted((p.relative_to(local).as_posix(), p) for p in local.rglob('*') if p.is_file())
         have = self.remote_sizes(remote)
+        same = [rel for rel, p in files if verify and verify(rel) and rel not in keep and rel not in skip and have.get(rel) == p.stat().st_size]
+        rmd5 = self.remote_md5(remote, same) if same else {}
+        changed = {rel for rel, p in files if rel in same and rmd5.get(rel) != hashlib.md5(p.read_bytes()).hexdigest()}
         todo = [(rel, p, p.stat().st_size) for rel, p in files
-                if rel not in skip and not rel.startswith('.dmpart') and (rel not in have if rel in keep else have.get(rel) != p.stat().st_size)]
+                if rel not in skip and not rel.startswith('.dmpart') and (rel not in have if rel in keep else have.get(rel) != p.stat().st_size or rel in changed)]
         total, done = sum(s for _, _, s in todo), 0
         self.log(f'{len(todo):,} files to push, {total / 2**20:,.0f} MB ({len(files) - len(todo):,} already on the device)')
         for d in sorted({os.path.dirname(r) for r, _, _ in todo}): self.shell(f'mkdir -p {shlex.quote(f"{remote}/{d}" if d else remote)}')

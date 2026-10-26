@@ -18,6 +18,11 @@ static VkSurfaceKHR g_surf; static VkSwapchainKHR g_swap; static VkImage g_simg[
 static VkSemaphore g_acq[8], g_done_sem[8]; static VkFence g_pfence[8]; static VkCommandPool g_ppool; static VkCommandBuffer g_pcb[8]; static uint32_t g_pi;
 static ANativeWindow *g_win;
 static VkImageView g_sview[8];
+// Where the game's picture lies in the window (fractions: x, y, width, height; aspect kept, black borders around it), for the front end's touch points, which hle_touch.c
+// takes relative to the picture: normalized by the whole window, a tap in Unpacking's 3040x1904 window (97 px borders) was off by up to 5% of the height
+static _Atomic uint32_t g_pic[4] = {0, 0, 1u << 20, 1u << 20};
+static void vk_pic_set(float x, float y, float w, float h) { atomic_store(&g_pic[0], (uint32_t)(x * (1 << 20))); atomic_store(&g_pic[1], (uint32_t)(y * (1 << 20))); atomic_store(&g_pic[2], (uint32_t)(w * (1 << 20))); atomic_store(&g_pic[3], (uint32_t)(h * (1 << 20))); }
+void dm_picture_rect(float r[4]) { for (int i = 0; i < 4; i++) r[i] = (float)atomic_load(&g_pic[i]) / (1 << 20); }
 __attribute__((weak)) int dm_overlay_visible(void) { return 0; }
 __attribute__((weak)) float dm_overlay_scale(void) { return 1; }
 __attribute__((weak)) void dm_overlay_knob(int stick, float *dx, float *dy) { (void)stick; *dx = *dy = 0; }
@@ -380,6 +385,7 @@ static void present_window(vkimg_t *im, const int crop[4]) {
     vkCmdClearColorImage(cb, g_simg[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rg);
     int cx = crop ? crop[0] : 0, cy = crop ? crop[1] : 0, cw = crop && crop[2] ? crop[2] : (int)im->w, ch = crop && crop[3] ? crop[3] : (int)im->h;
     double s = fmin((double)g_sext.width / cw, (double)g_sext.height / ch); int dw = (int)(cw * s), dh = (int)(ch * s), dx = ((int)g_sext.width - dw) / 2, dy = ((int)g_sext.height - dh) / 2;
+    vk_pic_set((float)dx / g_sext.width, (float)dy / g_sext.height, (float)dw / g_sext.width, (float)dh / g_sext.height);
     VkImageBlit b = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {{cx, cy, 0}, {cx + cw, cy + ch, 1}}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {{dx, dy, 0}, {dx + dw, dy + dh, 1}}};
     vkCmdBlitImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, g_simg[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
     VkImageLayout lay = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;

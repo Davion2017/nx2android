@@ -368,6 +368,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     return ok;
 }
 
+__attribute__((weak)) void dm_picture_rect(float r[4]);   // gfx_vk_present.c
 static void touch_event(AInputEvent *e) {
     ANativeWindow *w = dm_front_window(); float W = w ? (float)ANativeWindow_getWidth(w) : 1, H = w ? (float)ANativeWindow_getHeight(w) : 1;
     if (atomic_load(&g_tx_on)) { tx_touch(e, W, H); return; }   // the text entry's keys
@@ -383,6 +384,7 @@ static void touch_event(AInputEvent *e) {
     }
     uint64_t btn = 0; int32_t lx = 0, ly = 0, rx = 0, ry = 0; float kn[2][2] = {{0, 0}, {0, 0}}; int open = 0;
     dm_touch t[16]; int n = 0;
+    float pic[4] = {0, 0, 1, 1}; if (dm_picture_rect) dm_picture_rect(pic); if (pic[2] <= 0 || pic[3] <= 0) pic[2] = pic[3] = 1;   // gfx_vk_present.c: the picture inside the window
     for (size_t i = 0; i < pc; i++) {
         int id = AMotionEvent_getPointerId(e, i) & 31;
         int lifted = act == AMOTION_EVENT_ACTION_UP || act == AMOTION_EVENT_ACTION_CANCEL || (act == AMOTION_EVENT_ACTION_POINTER_UP && (int)i == ai);
@@ -397,7 +399,7 @@ static void touch_event(AInputEvent *e) {
             }
             g_ptr_ctl[id] = 0; continue;
         }
-        if (c < 0) { if (n < 16) { t[n].id = (uint32_t)id & 15; t[n].x = x / W; t[n].y = y / H; n++; } continue; }
+        if (c < 0) { if (n < 16) { t[n].id = (uint32_t)id & 15; t[n].x = (x / W - pic[0]) / pic[2]; t[n].y = (y / H - pic[1]) / pic[3]; n++; } continue; }   // relative to the game's picture
         const ov_ctl *k = &OV_CTLS[c];
         if (k->kind == OV_MENU) { if (id == g_drag.id) menu_drag(k, x, y, W, H); continue; }
         float dx = (x - k->x * W) / (ov_r(k) * H), dy = (y - k->y * H) / (ov_r(k) * H), m = sqrtf(dx * dx + dy * dy);

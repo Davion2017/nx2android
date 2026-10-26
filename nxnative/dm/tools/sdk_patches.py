@@ -38,6 +38,17 @@ CUTS = {
     (0x37c140, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
     (0x37c1dc, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
   ],
+  # SDK 13.3.2 sdk (Unpacking 2.01 = v327680, Unity 2019.4.34f1; Bayonetta 3 1.2.0 ships the same build): Absolum's cuts on this build. nninitStartup hands pool − used (3.14 GB) to
+  # StandardAllocator as one address region, which the 1 GB alignment put at +1.00 GB, and regions are placed after the last one: Unity's own (main+0x2262a0: AllocateAddressRegion, then
+  # AllocateMemoryPages) had only the 0.23 GB above it, and AllocateAddressRegion returned 0x1803 from 2.3 MB up. Unity's block allocator (main+0x580808) halved the 17.7 MB of the
+  # 1920x1080 RGBA16F camera target until a block fit (down to 1.1 MB), the texture was never initialized, and Unity bound the never-initialized object as the colour target every frame:
+  # the scene drew depth only and the title showed a white screen behind the menu. The constructor is at sdk+0x37bd20 (limit = alias start + 0x3fe00000 at +0x28, a unit heap of
+  # 0x30-byte nodes, the area then registered as occupied at +0x37bdcc); VammManager::AllocateAddressRegion's placement at sdk+0x37bec0 aligns a region by its size (+0x37bf2c)
+  '357efc198e728cb5d55265aff304f03c': [
+    (0x37bd30, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x37bdcc, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+    (0x37bf2c, '0a00a852', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more mov w10,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
+  ],
   # Pokémon Legends: Z-A 2.0.2 (v393216) sdk (SDK 19.3.11): the same node area cut. The constructor is at sdk+0x1423ec (limit = alias start + 0x3fe00000 at +0x28, a unit heap of 0x30-byte
   # nodes, the area then registered as occupied at +0x142468). With main's allocator region below, the guest block fits the 5 GB proven on a phone
   'df7a3960c74c3a4803f826c587153252': [

@@ -447,9 +447,18 @@ HLE_FORCE("_ZN2nn3hid28ShowControllerFirmwareUpdateERKNS0_27ControllerFirmwareUp
 // Touch screen: TouchScreenState<N> = { int64 sampling number; int32 count; int32 reserved; TouchState[N] }, filled from the front end's touch points (hle_touch.c touch_fill_n:
 // the Mac's mouse, the iPhone touches no gamepad control takes, DM_KEYS taps) in handheld mode, as on the Switch, whose screen is out of reach when docked: a game may read touches
 // without checking the mode, so in console mode the state stays empty (only the header is written). Super Mario Galaxy's pointer is the touch screen in handheld mode
+// On Android the screen the player looks at is a touch screen in both modes (docked only picks the console render profile), so touches reach the game in either: Unpacking
+// reads them in both (in console mode in screen pixels, hle_touch.c DM_TOUCH_DOCKED)
 int touch_fill_n(void *out, int max, uint64_t now_ns);
+static int touch_on(void) {
+#ifdef __ANDROID__
+    return 1;
+#else
+    return dm_opmode() == 0;
+#endif
+}
 static void touch_read(void *s, int n) {
-    if (dm_opmode() == 0) { touch_fill_n(s, n, now_ns()); return; }
+    if (touch_on()) { touch_fill_n(s, n, now_ns()); return; }
     int64_t *p = s; p[0] = atomic_fetch_add(&g_sampling, 1) + 1; ((int32_t *)s)[2] = 0; ((int32_t *)s)[3] = 0;
 }
 HLE_FORCE("_ZN2nn3hid21InitializeTouchScreenEv", "connect to the hid touch screen; the host takes touch points from the front end", void, h_hid_InitTouch, void) {}
@@ -463,7 +472,7 @@ TOUCH(1) TOUCH(2) TOUCH(3) TOUCH(4) TOUCH(5) TOUCH(6) TOUCH(7) TOUCH(8) TOUCH(9)
 int gesture_fill(void *out, int n, uint64_t now_ns);
 HLE_FORCE("_ZN2nn3hid17InitializeGestureEv", "connect to the hid gesture recognizer; the host recognizes gestures from the touch points", void, h_hid_InitGesture, void) {}
 HLE_FORCE("_ZN2nn3hid16GetGestureStatesEPNS0_12GestureStateEi", "gesture states, newest first (handheld mode: recognized from the touch points; console mode: none)", int, h_hid_Gestures, void *out, int n) {
-    return dm_opmode() == 0 ? gesture_fill(out, n, now_ns()) : 0;
+    return touch_on() ? gesture_fill(out, n, now_ns()) : 0;
 }
 
 // Six-axis details: the current state, at rest unless shaking, fusion off

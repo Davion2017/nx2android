@@ -877,7 +877,8 @@ static const tex_t *tex_snap(void *rec_, size_t off, int k, const NVNtexture *t,
     // The object is invalid at record time (Unity finalizes and re-initializes the same render target object between recording and submitting): keep the object pointer as before and read it at submit, when it is usually valid again; replay still checks the magic
     if (s->magic != MAGIC('T', 'E', 'X', 0)) {
         static int red;
-        if (red++ < 4) {   // the first 4 log the call site and the start of the object, to tell what the game passed
+        if (red++ < 4 || !(red & (red - 1))) {   // the first 4 log the call site and the start of the object, to tell what the game passed; then every power of two, with the count
+            if (red > 4) LOG("[RED] texture objects invalid while recording: %d so far", red);
             module_t *m = module_of((void *)ra); const uint64_t *q = (const uint64_t *)t;
             LOG("[RED] texture object invalid while recording (uninitialized or already finalized): %p index %d, call site %s+%#llx, object start %llx %llx %llx %llx %llx %llx; read again at submit", (const void *)t, k,
                 m ? m->name : "?", m ? (unsigned long long)(ra - (uint64_t)m->base) : (unsigned long long)ra,

@@ -194,6 +194,14 @@ PPtr<Shader>: int m_FileID; SInt64 m_PathID
 PPtr<Texture>: int m_FileID; SInt64 m_PathID
 Shader: string m_Name; SerializedShader m_ParsedForm; vector<data:unsigned int> platforms; vector<data:unsigned int> offsets; vector<data:unsigned int> compressedLengths; vector<data:unsigned int> decompressedLengths; vector<data:UInt8> compressedBlob; vector<data:PPtr<Shader>> m_Dependencies; map<data:pair(string,PPtr<Texture>)>~ m_NonModifiableTextures; bool! m_ShaderIsBaked
 '''
+# The Unity 2019.4 Shader (Unpacking, Unity 2019.4.34f1: no bundles, its shaders in Data/*.assets and Data/Resources), from 2019.4.34f1's type tree as AssetRipper's TypeTreeDumps records it
+# (2019.4.33f1's is the same), checked node for node with the flags: 2018.3's with global and local keyword indices per subprogram, a ray tracing program per pass and, as from 2019.3,
+# several segments per platform (offsets, compressedLengths and decompressedLengths are lists per platform)
+SHADER_2019_4 = (SHADER_2018_3.replace('vector<data:UInt16> m_KeywordIndices;', 'vector<data:UInt16> m_GlobalKeywordIndices; vector<data:UInt16> m_LocalKeywordIndices;')
+                 .replace('SerializedProgram progDomain; bool', 'SerializedProgram progDomain; SerializedProgram progRayTracing; bool')
+                 .replace('vector<data:unsigned int> offsets; vector<data:unsigned int> compressedLengths; vector<data:unsigned int> decompressedLengths;',
+                          'vector<data:vector<data:unsigned int>> offsets; vector<data:vector<data:unsigned int>> compressedLengths; vector<data:vector<data:unsigned int>> decompressedLengths;'))
+assert SHADER_2019_4.count('m_LocalKeywordIndices') == SHADER_2019_4.count('progRayTracing') == 1 and SHADER_2019_4.count('vector<data:vector<data:unsigned int>>') == 3
 # The Unity 2022.3 ComputeShader (Monster Train 2, Unity 2022.3.54f1: 12 in Data/sharedassets2.assets, which carries no type trees, and no bundle has one), from Unity 2022.3.54f1's type tree
 # as AssetRipper's TypeTreeDumps records it (StructsDump/release/2022.3.54f1.dump). Each kernel variant's code is a program code of one stage, compute (the layout of a Shader's subprogram code)
 COMPUTE_2022_3 = '''ComputeShaderResource: string name; string generatedName; int bindPoint; int samplerBindPoint; int texDimension
@@ -210,10 +218,22 @@ ComputeShader: string m_Name; vector<data:ComputeShaderPlatformVariant> variants
 COMPUTE_6000_3 = COMPUTE_2022_3.replace('ComputeShaderResource: string name; string generatedName; int bindPoint; int samplerBindPoint; int texDimension\n',
                                         'ComputeShaderResource: string name; string generatedName; int bindPoint; int samplerBindPoint; int texDimension; int resType\n')
 assert COMPUTE_6000_3 != COMPUTE_2022_3
+# The Unity 2019.4 ComputeShader (Unpacking, Unity 2019.4.34f1: in Data/sharedassets1.assets and Data/Resources/unity default resources), from 2019.4.34f1's type tree as AssetRipper's
+# TypeTreeDumps records it: an older form, each platform variant's kernels are the variants themselves (no kernel parents, no keyword sets)
+COMPUTE_2019_4 = '''ComputeShaderResource: string name; string generatedName; int bindPoint; int samplerBindPoint; int texDimension
+ComputeShaderBuiltinSampler: unsigned int sampler; int bindPoint
+ComputeShaderKernel: string name; vector<data:ComputeShaderResource> cbs; vector<data:ComputeShaderResource> textures; vector<data:ComputeShaderBuiltinSampler> builtinSamplers; vector<data:ComputeShaderResource> inBuffers; vector<data:ComputeShaderResource> outBuffers; vector<data:UInt8> code; vector<data:unsigned int>~ threadGroupSize
+ComputeShaderParam: string name; int type; int offset; int arraySize; int rowCount; int colCount
+ComputeShaderCB: string name; int byteSize; vector<data:ComputeShaderParam> params
+ComputeShaderVariant: int targetRenderer; int targetLevel; vector<data:ComputeShaderKernel> kernels; vector<data:ComputeShaderCB> constantBuffers; bool! resourcesResolved
+ComputeShader: string m_Name; vector<data:ComputeShaderVariant> variants
+'''
 CLASS_COMPUTE_SHADER = 72
 KNOWN_TREES = {(CLASS_SHADER, bytes.fromhex('ea424a5fc1e48db62144df956f9e1005')): ('Shader', SHADER_2022_3),
                (CLASS_SHADER, bytes.fromhex('a30e3dcf6c6d25153d6f64e5e41caf4e')): ('Shader', SHADER_2020_3),
                (CLASS_SHADER, bytes.fromhex('8db760073e1392061e4a36995f0735af')): ('Shader', SHADER_2018_3),
+               (CLASS_SHADER, bytes.fromhex('ed2a06ce7fb8203f6efb5ab5e0ce20d5')): ('Shader', SHADER_2019_4),
+               (CLASS_COMPUTE_SHADER, bytes.fromhex('1a95529ac2eb1a97cd9d2a4356bd722f')): ('ComputeShader', COMPUTE_2019_4),
                (CLASS_COMPUTE_SHADER, bytes.fromhex('bfdf63ab0ce84d5a2c765ee560d90fe7')): ('ComputeShader', COMPUTE_2022_3),
                (CLASS_COMPUTE_SHADER, bytes.fromhex('43a0948a3f403068c0b31bff90ba0c9a')): ('ComputeShader', COMPUTE_6000_3)}
 

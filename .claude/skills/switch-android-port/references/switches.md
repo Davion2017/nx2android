@@ -60,6 +60,7 @@ The source of each switch is in `nxnative/dm/android/` unless noted. Check the c
 | `DM_NO_ADPF=1` | start-up | no Android performance hints |
 | `DM_OPMODE=0/1` | start-up (`host/hle_oe.c`) | handheld / docked at launch. The pause menu's Mode setting (`docked=` in `settings.txt`) overrides it and switches live |
 | `DM_AUDIO=0` | start-up (`host/hle_audio.c`) | silent sink (Android defaults to real output) |
+| `DM_TOUCH_DOCKED=screen` | first touch read (`host/hle_touch.c`) | profile env: docked touch points as a game that takes the panel's values as screen pixels expects them (Unity 2019.4: x = screen column, y = screen row − 360 on 1920x1080). On Android touches reach the game in both modes (`hle_hid.c` `touch_on`); a Switch has no docked touch |
 
 ## Control file lines (`ctl.txt`)
 - **Buttons:** `A`, `B`, `X`, `Y`, `L`, `R`, `ZL`, `ZR`, `Plus`, `Minus`, `Up`, `Down`, `Left`, `Right`, `LS`, `RS`.

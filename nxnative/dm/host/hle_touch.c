@@ -37,7 +37,17 @@ void dm_touch_set(const dm_touch *t, int n) {
     pthread_mutex_unlock(&g_tl);
 }
 
+int dm_opmode(void);   // hle_oe.c: 0 handheld, 1 console
 static int32_t clampi(float v, int hi) { int32_t r = (int32_t)(v * (float)(hi + 1)); return r < 0 ? 0 : r > hi ? hi : r; }
+// The panel is 1280x720 in both modes. DM_TOUCH_DOCKED=screen (a profile env, Android, where docked play has a touch screen too): in console mode a point is given as
+// the game's own player turns it into a pixel of the 1920x1080 console screen. Unity 2019.4's player takes the panel's values as screen pixels with the panel's flip:
+// main+0x55c5ac stores (x, 720 - y) unscaled in its bottom-up screen space, so in Unpacking a tap at 47% of the height pressed the item at 65% ((360 + y) / 1080). So x is
+// the screen column and y the screen row less 360 (from -360 up: Unity converts the int signed). The Switch never shows this: its screen cannot be touched when docked
+static int touch_docked_screen(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_TOUCH_DOCKED"); v = e && !strcmp(e, "screen"); } return v && dm_opmode() == 1; }
+static void touch_xy(float nx, float ny, int32_t *x, int32_t *y) {
+    if (!touch_docked_screen()) { *x = clampi(nx, 1279); *y = clampi(ny, 719); return; }
+    *x = clampi(nx, 1919); *y = clampi(ny, 1079) - 360;
+}
 // Fill one TouchScreenState<max> (out is 0x10 + 0x28 · max bytes; max 1–16); now_ns is used for delta_time. Returns the number of touch points written.
 // Fingers beyond max are left for a later read (their Start / End is not used up)
 int touch_fill_n(void *out, int max, uint64_t now_ns) {
@@ -52,7 +62,7 @@ int touch_fill_n(void *out, int max, uint64_t now_ns) {
         if (!g_f[id].reported) { attr |= 1; g_f[id].reported = 1; }          // Start (reported for the first time this time)
         else if (g_f[id].st == F_LIFTED) attr |= 2;                         // End (Start already reported, already lifted)
         uint8_t *s = o + 0x10 + 0x28 * k++;
-        int32_t x = clampi(g_f[id].x, 1279), y = clampi(g_f[id].y, 719), d = 30, zero = 0, fid = id;
+        int32_t x, y, d = 30, zero = 0, fid = id; touch_xy(g_f[id].x, g_f[id].y, &x, &y);
         memcpy(s + 0x00, &dt, 8); memcpy(s + 0x08, &attr, 4); memcpy(s + 0x0c, &fid, 4);
         memcpy(s + 0x10, &x, 4); memcpy(s + 0x14, &y, 4); memcpy(s + 0x18, &d, 4); memcpy(s + 0x1c, &d, 4); memcpy(s + 0x20, &zero, 4);
         if (attr & 2) {                                                      // End has been reported: release; if the same id was pressed again in the meantime, turn it into a new press
