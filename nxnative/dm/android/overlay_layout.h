@@ -12,17 +12,21 @@ static const ov_ctl OV_CTLS[] = {DM_AOV_TABLE};
 #define OV_KNOB 0.42f        // a stick's knob radius, of the stick's
 #define OV_MENU_ALPHA 0.70f
 #define OV_FLASH_NS 180000000ll   // a pressed button's flash fades to its held glow in this time
-// front_android.c → gfx_vk_present.c: what to draw (0 nothing, 1 the gamepad, 2 only the menu button: the player hid the gamepad or a controller is in use),
-// where a stick's knob is (its offset from the stick's centre in stick radii, -1..1), and when each button was pressed (0 = not held; for the d-pad, its
-// four directions by DM_BTN_* bit)
+// front_android.c → gfx_vk_present.c: what to draw (0 nothing: a controller is attached, and its keys open the menu; 1 the gamepad; 2 only the menu
+// button: the player hid the gamepad, or keys came from a device not counted as a controller), where a stick's knob is (its offset from the stick's centre
+// in stick radii, -1..1), and when each button was pressed (0 = not held; for the d-pad, its four directions by DM_BTN_* bit)
 int dm_overlay_visible(void);
 void dm_overlay_knob(int stick, float *dx, float *dy);
 int64_t dm_overlay_pressed(int ctl, uint64_t bit);   // CLOCK_MONOTONIC ns of the press, 0 = not held
+// the menu button can be dragged where it hides nothing of the game's (front_android.c keeps the spot in settings.txt): its centre, as the table's x, y
+void dm_overlay_menu_xy(float *x, float *y);
+#define OV_DRAG_SLOP 0.02f   // a press on the menu button that moves this far (of the window's height) drags it instead of opening the menu
 // the controls' size factor: 1, or more on a small screen so a face button stays at least OV_MIN_MM wide (sizes follow the window's height, which on a
 // 6.7" phone made them 7 mm against 12 on an 8.8" tablet). Positions stay where they are
 #define OV_MIN_MM 10.0f
 float dm_overlay_scale(void);
 static inline float ov_r(const ov_ctl *c) { return c->r * dm_overlay_scale(); }
+static inline void ov_xy(const ov_ctl *c, float *x, float *y) { if (c->kind == OV_MENU) dm_overlay_menu_xy(x, y); else { *x = c->x; *y = c->y; } }   // where it is now
 #define OV_REACH_MIN 0.045f   // a small button (-, +, the menu button: half the face buttons' size, as on a Joy-Con) still takes touches this far from its centre
 // L, R, ZL and ZR are drawn as the Switch's shoulder buttons, not discs: a box whose top outer corner is a quarter ellipse (L, R: a wide, low bumper whose
 // top sweeps down to the outer side, as a Joy-Con's; ZL, ZR: a taller trigger with its lower inner corner round too). ov_shoulder: -1 a left one, 1 a right

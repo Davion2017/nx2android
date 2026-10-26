@@ -23,6 +23,7 @@ __attribute__((weak)) float dm_overlay_scale(void) { return 1; }
 __attribute__((weak)) void dm_overlay_knob(int stick, float *dx, float *dy) { (void)stick; *dx = *dy = 0; }
 __attribute__((weak)) int64_t dm_overlay_pressed(int ctl, uint64_t bit) { (void)ctl; (void)bit; return 0; }
 __attribute__((weak)) int dm_menu_state(void) { return -1; }
+__attribute__((weak)) void dm_overlay_menu_xy(float *x, float *y) { *x = *y = 0; for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_MENU) { *x = OV_CTLS[i].x; *y = OV_CTLS[i].y; } }
 __attribute__((weak)) int dm_text_entry(char *title, int tcap, char *text, int xcap, int *sel, int *shift) { (void)title; (void)tcap; (void)text; (void)xcap; (void)sel; (void)shift; return 0; }
 static void swap_destroy(void) {
     if (g_swap) { vkDeviceWaitIdle(V.dev); for (uint32_t i = 0; i < g_nsimg; i++) if (g_sview[i]) { vkDestroyImageView(V.dev, g_sview[i], NULL); g_sview[i] = VK_NULL_HANDLE; }
@@ -280,10 +281,10 @@ static void ov_render(VkCommandBuffer cb, int mode, int menu) {
             }
         }
     }
-    for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_MENU) {   // the menu button, on top of everything
-        const ov_ctl *c = &OV_CTLS[i]; float cr = ov_r(c) * H, g = ov_glow(dm_overlay_pressed(i, 0), now);
-        ov_sprite(cb, i, c->x * W, c->y * H, cr, OV_MENU_ALPHA);
-        if (g > 0) ov_sprite(cb, SP_DISC, c->x * W, c->y * H, cr * 0.93f, g);
+    for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_MENU && mode) {   // the menu button, on top of everything, where the player dragged it
+        const ov_ctl *c = &OV_CTLS[i]; float cr = ov_r(c) * H, g = ov_glow(dm_overlay_pressed(i, 0), now), mx, my; ov_xy(c, &mx, &my);
+        ov_sprite(cb, i, mx * W, my * H, cr, OV_MENU_ALPHA);
+        if (g > 0) ov_sprite(cb, SP_DISC, mx * W, my * H, cr * 0.93f, g);
     }
 }
 static int overlay_ready(VkCommandBuffer cb, uint32_t k, int menu) {   // k: this present's slot (its fence is not signalled yet)
