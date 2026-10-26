@@ -174,8 +174,11 @@ namespace Ryujinx.Graphics.Shader.Translation
             Definitions.LastInVertexPipeline = true;
         }
 
+        private bool _nextStageMerged;
+
         public void SetNextStage(TranslatorContext nextStage)
         {
+            _nextStageMerged = true;
             AttributeUsage.MergeFromtNextStage(
                 Definitions.GpPassthrough,
                 nextStage._program.UsedFeatures.HasFlag(FeatureFlags.FixedFuncAttr),
@@ -193,6 +196,14 @@ namespace Ryujinx.Graphics.Shader.Translation
 
         public ShaderProgram Translate(bool asCompute = false)
         {
+            // nxnative: a passthrough geometry shader translated alone (no SetNextStage: dmsh_xlate translates each shader by itself) for a host without passthrough would forward
+            // no attribute, and the fragment shader's inputs went unwritten (Xenoblade Chronicles 3's effect layer shaders; Adreno refused their pipelines). Maxwell forwards every
+            // attribute such a shader does not write: the first 16 are forwarded (64 components, Vulkan's minimum geometry input and output limit)
+            if (Definitions.GpPassthrough && !GpuAccessor.QueryHostSupportsGeometryShaderPassthrough() && !_nextStageMerged)
+            {
+                AttributeUsage.SetPassthroughWithoutNextStage(0xffff);
+            }
+
             ResourceManager resourceManager = CreateResourceManager(asCompute);
 
             bool usesLocalMemory = _program.UsedFeatures.HasFlag(FeatureFlags.LocalMemory);

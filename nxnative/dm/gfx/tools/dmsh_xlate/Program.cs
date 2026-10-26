@@ -116,6 +116,28 @@ static class SwshXlate
                 false, false, false, false /* depth not rewritten: dmsh_build.py adds the GL entry point (see the file header) */, false, 1f, AlphaTestOp.Always, 0f, attr, false, fout, false,
                 false /* no Y flip */, true /* origin upper-left */, false);
         }
+        // Job "xfb" (the Android chain, shader_vk.py xfb_layout; Vulkan captures natively with VK_EXT_transform_feedback): per feedback buffer {"stride", "words"}, words = the output word
+        // written at each 4-byte position (0x20 + 4 x generic output + component, Maxwell's attribute word numbering). The translator then decorates those outputs XfbBuffer / XfbStride / Offset.
+        // Jobs without it (every Apple job, and every shader without feedback) answer as before: no feedback
+        // Job "sb_align" (the Android chain, shader_vk.py SB_ALIGN): the alignment the host binds storage buffers at. A global memory access becomes a storage buffer access at
+        // address − (buffer address & −alignment), so the replay must bind from exactly that boundary (Vulkan binds at a multiple of the device's minStorageBufferOffsetAlignment, 64 on
+        // Adreno; Metal at the address itself, the default 16 here). With 16 against Adreno's 64, Xenoblade Chronicles 3's movie shader read its NV12 frame shifted: vertical stripes.
+        // GlobalToStorage's inline accesses take that form only when the buffers are "unaligned"; otherwise they index from the buffer address itself, against a binding that starts
+        // below it. Xenoblade Chronicles 3's vertex shader 5f6491f9bda5ae4d writes halves at its buffer + 10 x vertex, the buffer 0xd0 past a 256-byte boundary: they landed 0xd0 bytes
+        // early, over the game's malloc chunks in the same pool, and the heap broke (a crash in dlmalloc after the opening movie). With an alignment given, every access takes the form
+        public int QueryHostStorageBufferOffsetAlignment() => _job["sb_align"] is JsonNode n ? (int)n : 16;
+        public bool QueryHasUnalignedStorageBuffer() => _job["sb_align"] != null;
+        // Job "gs_passthrough" = false (the Android chain): passthrough geometry shaders (Maxwell's fast GS) are written out as ordinary ones. VK_NV_geometry_shader_passthrough is NVIDIA's
+        // alone; with its capability declared, Adreno refused every pipeline of Xenoblade Chronicles 3's effect geometry shaders (VK_ERROR_UNKNOWN)
+        public bool QueryHostSupportsGeometryShaderPassthrough() => !(_job["gs_passthrough"] is JsonNode n && !(bool)n);
+        JsonObject Xfb(int b) => _job["xfb"] is JsonArray a && b < a.Count ? a[b] as JsonObject : null;
+        public bool QueryTransformFeedbackEnabled() => _job["xfb"] != null;
+        public ReadOnlySpan<byte> QueryTransformFeedbackVaryingLocations(int bufferIndex)
+        {
+            if (Xfb(bufferIndex)?["words"] is not JsonArray w) return Array.Empty<byte>();
+            byte[] r = new byte[w.Count]; for (int i = 0; i < r.Length; i++) r[i] = (byte)(int)w[i]; return r;
+        }
+        public int QueryTransformFeedbackStride(int bufferIndex) => Xfb(bufferIndex)?["stride"] is JsonNode s ? (int)s : 0;
         public bool QueryHostSupportsTextureShadowLod() => true;
         public bool QueryHostSupportsDepthClipControl() => false;   // Metal has no -1..1 clip control; the depth convention is not left to the translator, the rewrite is added per entry point in the MSL (see the file header)
         // Job reduced = true: relaxed precision - the translator marks NoContraction only on operations that must be exact (the default marks all: keeps the bit-exact results of Maxwell's separate rounding, at the cost of many optimization-disabled spvFMul etc. in the MSL)

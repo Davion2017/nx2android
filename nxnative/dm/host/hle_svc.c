@@ -261,9 +261,20 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         uintptr_t pg = (uintptr_t)getpagesize(), lo = (uintptr_t)a, hi = (uintptr_t)a + size;
         uintptr_t mlo = num == 0x2C ? lo & ~(pg - 1) : (lo + pg - 1) & ~(pg - 1), mhi = num == 0x2C ? (hi + pg - 1) & ~(pg - 1) : hi & ~(pg - 1);
         int rc = 0;
+#if defined(__ANDROID__) || defined(__linux__)
+        // Unmapped pages are dropped with MADV_DONTNEED, which on private anonymous memory reads zero at the next touch: a page mapped again is zero, as Horizon's MapPhysicalMemory
+        // gives. MADV_FREE only lets the kernel take the pages when it needs them, so a range unmapped and mapped again soon comes back with its old bytes (Xenoblade Chronicles 3's
+        // allocator unmaps and maps the same 512 KB blocks again and again)
+        const int drop = MADV_DONTNEED;
+#else
+        const int drop = MADV_FREE;
+#endif
         if (mhi > mlo) rc = num == 0x2C ? mprotect((void *)mlo, mhi - mlo, PROT_READ | PROT_WRITE)
-                                        : (madvise((void *)mlo, mhi - mlo, MADV_FREE), mprotect((void *)mlo, mhi - mlo, PROT_NONE));
-        if (rc) { if (DM_GAME_MEM_MAP_LIMIT && num == 0x2C) pthread_mutex_unlock(&g_phys_mu); die("SVC %#x mprotect %p+%#zx errno=%d", num, a, size, errno); }
+                                        : (madvise((void *)mlo, mhi - mlo, drop), mprotect((void *)mlo, mhi - mlo, PROT_NONE));
+        if (rc) { int err = errno; if (DM_GAME_MEM_MAP_LIMIT && num == 0x2C) pthread_mutex_unlock(&g_phys_mu);
+            FILE *mf = fopen("/proc/self/maps", "r"); char ml[256]; int nm = 0;   // what the host's address space holds around the range (ENOMEM: a part of it is not mapped)
+            if (mf) { while (fgets(ml, sizeof ml, mf)) { unsigned long long b0, b1; nm++; if (sscanf(ml, "%llx-%llx", &b0, &b1) == 2 && b1 > mlo - 0x400000 && b0 < mhi + 0x400000) LOG("[mem] map: %s", ml); } fclose(mf); }
+            die("SVC %#x mprotect %p+%#zx errno=%d (%d mappings)", num, a, size, err, nm); }
         if (g_flag.svc) LOG("%sPhysicalMemory %p+%#zx", num == 0x2C ? "Map" : "Unmap", a, size);
         // how deep the alias region is used (one line per 256 MB crossed): for sizing the reservation and alias region (iOS caps a single reservation at 6 GB)
         if (num == 0x2C) { static _Atomic uint64_t hw; uint64_t end = (uint64_t)(a + size - g_alias), old = atomic_load(&hw);

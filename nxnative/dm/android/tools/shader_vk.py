@@ -3,10 +3,12 @@
 # The same translator as the Apple chain (dm/gfx/tools/dmsh_xlate_bin, Ryujinx's translator with TargetApi.Vulkan) and the same jobs as dmsh_build.py
 # (control section / code area / c1 split, the VertexA + VertexB merge, the profile's answer table), but no MSL: Vulkan takes the SPIR-V as it is.
 # Geometry shaders are translated as Vulkan geometry shaders (the Apple chain emulates them in compute kernels).
-#   DM_GAME=<id> shader_vk.py <package dir> <out bundle> [--jobs N] [--keys k1,k2] [--xlate <dmsh_xlate.dll>]
+#   DM_GAME=<id> shader_vk.py <package dir> <out bundle> [--jobs N] [--keys k1,k2] [--xlate <dmsh_xlate.dll>] [--capture <dir>]
+# --capture: shaders whose code no game file holds, saved on the device by the Vulkan backend (gfx_vk_shader.c vk_shader_missing: <key>.bin = "DMSC", u32 control length, u32 code length,
+#   control section, code area), translated beside the package's; a file whose content does not hash to its name, or whose key the package has, is left out
 # Bundle (read by the Vulkan backend, dm/android/gfx_vk_shader.c): "DMSV" u32 version, u32 count, then count entries {u64 key, u32 stage, u32 spv_off, u32 spv_len,
 #   u32 refl_off, u32 refl_len, u32 pad} sorted by key, then the blobs. refl is compact JSON: bindings, c1, local size, notes.
-import argparse, collections, concurrent.futures as cf, json, os, re, struct, subprocess, sys, tempfile
+import argparse, collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys, tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -19,6 +21,7 @@ ap.add_argument('pkg'); ap.add_argument('out')
 ap.add_argument('--jobs', type=int, default=os.cpu_count() or 8)
 ap.add_argument('--keys', default='')
 ap.add_argument('--dotnet', default=os.environ.get('DOTNET', 'dotnet'))
+ap.add_argument('--capture', help='a folder of shaders captured at run time on the device (<key>.bin)')
 ap.add_argument('--xlate', help="the translator (dmsh_xlate.dll) to run (default: the iOS chain's dm/gfx/tools/dmsh_xlate_bin; the porter builds one from the in-repo source)")
 a = ap.parse_args()
 
@@ -27,10 +30,31 @@ FACTS = dmsh_facts.load()
 MAP = str(GAME.table('shader_map.tsv'))
 XLATE_DLL = a.xlate or str(TOOLS / 'dmsh_xlate_bin/dmsh_xlate.dll')
 STAGES = {'vs': 0, 'ps': 1, 'gs': 2, 'hs': 3, 'ds': 4, 'cs': 5}   # NVN stage numbers
+# Storage buffers are bound from a 256-byte boundary below their address (gfx_vk_exec.c SB_ALIGN, the same number): Vulkan's largest minStorageBufferOffsetAlignment, so a multiple of
+# every device's; the translator offsets every storage access by the address's distance from that boundary (Program.cs QueryHostStorageBufferOffsetAlignment)
+SB_ALIGN = 256
 
 def records(d):
     r = [m.start() for m in re.finditer(b'BTCDBTCD', d)]
     return [d[x:(r[k + 1] if k + 1 < len(r) else len(d))] for k, x in enumerate(r)]
+
+SPH_STAGE = {1: 'vs', 2: 'hs', 3: 'ds', 4: 'gs', 5: 'ps'}   # SPH word 0 bits 10..13 (shader_split.py sph_stage)
+def captured(d):
+    """The run-time captures in folder d (--capture): {key: (stage, record in the package's form)}"""
+    out = {}
+    for nm in sorted(os.listdir(d)) if d and os.path.isdir(d) else []:
+        if not re.fullmatch(r'[0-9a-f]{16}\.bin', nm): continue
+        b = open(os.path.join(d, nm), 'rb').read()
+        if len(b) < 12 or b[:4] != b'DMSC': print(f'[RED] capture {nm}: not a captured shader', flush=True); continue
+        nctl, ncode = struct.unpack_from('<2I', b, 4); ctl, code = b[12:12 + nctl], b[12 + nctl:12 + nctl + ncode]
+        if len(code) != ncode or len(ctl) != nctl or ctl[:4] != bytes.fromhex('34127698'): print(f'[RED] capture {nm}: truncated', flush=True); continue
+        if hashlib.sha256(ctl + code).hexdigest()[:16] != nm[:16]: print(f'[RED] capture {nm}: its content does not hash to its name', flush=True); continue
+        st = 'cs' if code[:4] == bytes.fromhex('79563412') else SPH_STAGE.get(struct.unpack_from('<I', code, 0x30)[0] >> 10 & 0xf) if code[:4] == bytes.fromhex('78563412') and len(code) > 0x80 else None
+        if not st: print(f'[RED] capture {nm}: no stage in its code area header', flush=True); continue
+        rec = bytearray(b'BTCDBTCD' + bytes(0x30)); struct.pack_into('<2I', rec, 0x28, len(ctl), len(code)); rec += code + ctl
+        if rec.find(bytes.fromhex('34127698')) != 0x38 + len(code): print(f'[RED] capture {nm}: the control magic appears in its code area', flush=True); continue   # job_for splits there
+        out[nm[:16]] = (st, bytes(rec))
+    return out
 
 def vertex_ab(key, code, ctl):   # dmsh_build.py vertex_ab: a VertexA + VertexB program merged as Ryujinx does
     if len(code) < 0x80 or len(ctl) < 0x760 or code[:4] != bytes.fromhex('78563412'): return None
@@ -50,7 +74,25 @@ def vertex_ab(key, code, ctl):   # dmsh_build.py vertex_ab: a VertexA + VertexB 
         if ins >> 52 == 0xe30 and ins & 0x1f == 0xf: struct.pack_into('<Q', av, o, 0xe24 << 52 | ((len(av) - (o + 8)) & 0xffffff) << 20 | ins & 0xfffff)
     return code[:0x30] + struct.pack('<20I', *sph) + bytes(av) + b, code[b_sph + b_len:]
 
-def job_for(key, stage, rec, w):   # dmsh_build.py job_for, without transform feedback
+def xfb_layout(key, ctl):
+    """A vertex shader's transform feedback as its control section declares it (where the NVN driver reads it; dmsh_build.py tf_layout reads the one-output form): +0x6dc u16 stride of
+    each buffer, +0x6e8 u8 number of outputs it captures, +0xdc + 0x80 b those outputs (0x20 + n = generic output n), +0x4dc + 0x80 b their component counts (u8 each); the outputs
+    follow each other in the buffer (up to 9 outputs interleaved in one buffer, stride 144, in the game it was found with). → the translator's job "xfb": per buffer None or
+    {stride, words}, words = the output word at each 4-byte position (Maxwell's numbering, 0x20 + 4 n + component); None without feedback or in a form not known"""
+    strides = struct.unpack_from('<4H', ctl, 0x6dc)
+    if not any(strides): return None
+    out = []
+    for b in range(4):
+        if not strides[b]: out.append(None); continue
+        n = ctl[0x6e8 + b]; outs, comps = ctl[0xdc + 0x80 * b:0xdc + 0x80 * b + n], ctl[0x4dc + 0x80 * b:0x4dc + 0x80 * b + n]
+        words = [0x20 + 4 * (o - 0x20) + c for o, k in zip(outs, comps) for c in range(k)]
+        if not n or any(not 0x20 <= o < 0x40 for o in outs) or any(not 1 <= k <= 4 for k in comps) or 4 * len(words) != strides[b]:
+            print(f'[RED] {key}: transform feedback buffer {b} in a form not known (stride {strides[b]}, outputs {list(outs)}, components {list(comps)}): translated without capture', flush=True)
+            return None
+        out.append({'stride': strides[b], 'words': words})
+    return out
+
+def job_for(key, stage, rec, w):   # dmsh_build.py job_for; transform feedback is captured natively (xfb_layout)
     ci = rec.find(bytes.fromhex('34127698')); code = rec[0x38:ci]
     c1o, c1t = struct.unpack_from('<2I', rec, ci + 0x700)
     c1 = rec[0x38 + c1o:0x38 + c1t]
@@ -59,7 +101,8 @@ def job_for(key, stage, rec, w):   # dmsh_build.py job_for, without transform fe
     if stage != 'cs': code = code[0x30:]
     elif code[:4] == bytes.fromhex('79563412'): code = code[0x100:]
     cp = os.path.join(w, key + '.bin'); open(cp, 'wb').write(code)
-    j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True}
+    xfb = xfb_layout(key, rec[ci:]) if stage == 'vs' else None
+    j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'gs_passthrough': False, **({'xfb': xfb} if xfb else {})}
     if key in FACTS: j.update(FACTS[key])
     else: j['no_facts'] = True
     return j, c1
@@ -210,15 +253,19 @@ def main():
     for ln in open(MAP, encoding='utf-8'):
         c = ln.rstrip('\n').split('\t')
         if len(c) > 4 and c[0].endswith('.bin'): loc.setdefault(c[3], (c[0], int(c[1])))
-    keys = sorted(k for k in (a.keys.split(',') if a.keys else loc) if k in loc)
+    cap = {k: v for k, v in captured(a.capture).items() if k not in loc}
+    if cap: print(f'{len(cap)} shaders captured at run time: {" ".join(f"{k} ({st})" for k, (st, _) in sorted(cap.items()))}', flush=True)
+    keys = sorted(k for k in (a.keys.split(',') if a.keys else [*loc, *cap]) if k in loc or k in cap)
     packs = {}
     w = tempfile.mkdtemp(prefix='shvk_', dir=os.environ.get('WORK'))
     jobs, c1s, stages = {}, {}, {}
     for k in keys:
-        name, idx = loc[k]
-        if name not in packs: packs[name] = records(open(os.path.join(a.pkg, name), 'rb').read())
-        stages[k] = name[:2]
-        jobs[k], c1s[k] = job_for(k, name[:2], packs[name][idx], w)
+        if k in cap: stages[k], rec = cap[k]
+        else:
+            name, idx = loc[k]
+            if name not in packs: packs[name] = records(open(os.path.join(a.pkg, name), 'rb').read())
+            stages[k], rec = name[:2], packs[name][idx]
+        jobs[k], c1s[k] = job_for(k, stages[k], rec, w)
     chunks = [keys[i::a.jobs] for i in range(a.jobs) if keys[i::a.jobs]]
     def xl(ch):
         jp = os.path.join(w, f'job_{abs(hash(ch[0]))}.json'); json.dump([jobs[k] for k in ch], open(jp, 'w'))

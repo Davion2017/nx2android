@@ -118,6 +118,13 @@ class Adb:
         self.shell(f'am force-stop {package}')
         return True
 
+    def pull_new(self, rdir, local, pattern=None):   # the files directly in rdir that local lacks (at their size), pulled into local → their names
+        local = Path(local); got = []
+        for rel, sz in sorted(self.remote_sizes(rdir).items()):
+            if '/' in rel or (pattern and not pattern(rel)) or ((local / rel).is_file() and (local / rel).stat().st_size == sz): continue
+            local.mkdir(parents=True, exist_ok=True); self.run('pull', f'{rdir}/{rel}', local / rel); got.append(rel)
+        return got
+
     def remote_sizes(self, rdir):   # {relative path: size} of every file under rdir on the device
         q = shlex.quote(rdir)
         out = self.shell(f'[ -d {q} ] && cd {q} && find . -type f -exec stat -c "%s %n" {{}} + ; true')

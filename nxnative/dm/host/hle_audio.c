@@ -6,6 +6,7 @@
 #include <AudioToolbox/AudioToolbox.h>
 #include <TargetConditionals.h>
 #include <dispatch/dispatch.h>
+#include <sched.h>
 #include <stdatomic.h>
 #include <unistd.h>
 
@@ -21,12 +22,13 @@ typedef struct {
     int ch;
     _Atomic int state;
     _Atomic uint32_t vol;              // SetAudioOutVolume gain as float bits (1.0 at open), applied to the samples as they are pulled
-    gbuf *q[QMAX]; _Atomic uint32_t q_head, q_tail;       // Pending: written by the game side, read by the output side
+    struct { gbuf *b; void *ptr; uint64_t size; } q[QMAX]; _Atomic uint32_t q_head, q_tail;   // Pending: written by the game side, read by the output side (see h_au_Append)
     gbuf *rel[RELMAX]; _Atomic uint32_t rel_head, rel_tail; // Released: written by the output side, read by the game side
     uint64_t pos;                      // Bytes already played of the current block
     AudioUnit au;
     int backend;                       // BK_*: the running consumer. Start, Stop and the background suspend change it only under g_aos_lock and act on it rather than re-deriving it from state and g_suspended
     pthread_t null_th; _Atomic int null_run;
+    _Atomic int pulling;               // a consumer is in pull() (exclusive_pull)
     dispatch_semaphore_t notify_sem;
     pthread_t notify_th; _Atomic int notify_run, notify_pending, notify_armed;
     dispatch_semaphore_t rel_sem;      // Host outputs only (dm_pcmout_open): signaled for each release, so the in-process audio renderer blocks instead of polling (dm_pcmout_wait)
@@ -91,11 +93,11 @@ static void pull(aout *a, uint8_t *dst, uint64_t n) {
         if (qh == qt || atomic_load_explicit(&a->state, memory_order_acquire) != STATE_STARTED) {
             if (qh == qt && atomic_load_explicit(&a->state, memory_order_acquire) == STATE_STARTED) { atomic_fetch_add(&a->under_n, 1); atomic_fetch_add(&a->under_b, n); }
             memset(dst, 0, n); break; }
-        gbuf *b = a->q[qh & (QMAX - 1)];
-        uint64_t k = b->size - a->pos; if (k > n) k = n;
-        memcpy(dst, (uint8_t *)b->ptr + a->pos, k);
+        gbuf *b = a->q[qh & (QMAX - 1)].b; uint8_t *bp = a->q[qh & (QMAX - 1)].ptr; uint64_t bs = a->q[qh & (QMAX - 1)].size;
+        uint64_t k = bs - a->pos; if (k > n) k = n;
+        if (bp) memcpy(dst, bp + a->pos, k); else memset(dst, 0, k);
         dst += k; n -= k; a->pos += k;
-        if (a->pos >= b->size) {
+        if (a->pos >= bs) {
             uint32_t rw = atomic_load_explicit(&a->rel_tail, memory_order_relaxed);
             uint32_t rr = atomic_load_explicit(&a->rel_head, memory_order_acquire);
             if (rw - rr == RELMAX) die("AudioOut released queue overflow");
@@ -121,6 +123,11 @@ static void pull(aout *a, uint8_t *dst, uint64_t n) {
 // Core Audio's own 6 → 2 mapping keeps only the front pair, so voices on the center (Luigi's Mansion 3) and the back channels were silent. The queue still takes all six guest channels,
 // in blocks through a stack buffer (no allocation in the real-time callback)
 static int device_channels(const aout *a) { return a->ch == 6 ? 2 : a->ch; }
+// pull() has one consumer at a time by design (the device callback or the silent sink), but a device may call back once more after it was stopped (Android's
+// AAudio runs a callback already under way to its end). A second consumer would race the queue head and position, and the copy length would underflow. So a
+// consumer that finds the output taken, or calls back for a backend no longer current, gives silence; au_close waits for a pull under way before it frees the output
+static int pull_begin(aout *a) { return !atomic_exchange_explicit(&a->pulling, 1, memory_order_acquire); }
+static void pull_end(aout *a) { atomic_store_explicit(&a->pulling, 0, memory_order_release); }
 static void pull_device(aout *a, uint8_t *dst, uint64_t bytes) {
     if (a->ch != 6) { pull(a, dst, bytes); return; }
     enum { BLOCK = 128, CF = 32768, CC = 23167, CL = 8224, CB = 23167 };
@@ -155,7 +162,9 @@ static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioT
         if (++a->st_calls % 2000 == 0) { uint64_t un = atomic_load(&a->under_n), ubb = atomic_load(&a->under_b);
             LOG("audio #%d device callbacks %llu: %u–%u frames each, %.1f blocks queued on average at callback; in these 2000, %llu underruns, %.1f ms zero-padded", a->id, (unsigned long long)a->st_calls, a->st_fmin, a->st_fmax, a->st_qsum / 2000.0,
                 (unsigned long long)(un - a->st_u0), (ubb - a->st_ub0) / (2.0 * a->ch) / (RATE / 1000.0)); a->st_fmin = ~0u; a->st_fmax = 0; a->st_qsum = 0; a->st_u0 = un; a->st_ub0 = ubb; } }
+    if (a->backend != BK_AU || !pull_begin(a)) { memset(bl->mBuffers[0].mData, 0, bl->mBuffers[0].mDataByteSize); return noErr; }   // a late callback (see pull_begin)
     pull_device(a, bl->mBuffers[0].mData, bl->mBuffers[0].mDataByteSize);
+    pull_end(a);
     { static int mute = -1; if (mute < 0) { const char *e = getenv("DM_AUDIO_MUTE"); mute = e && atoi(e); }   // diagnostic: the whole real-output path (AudioUnit callback pacing, background take-over) but with the output silenced (lifecycle tests on the Mac without noise)
       if (mute) memset(bl->mBuffers[0].mData, 0, bl->mBuffers[0].mDataByteSize); }
     return noErr;
@@ -204,7 +213,7 @@ static void *null_sink(void *p) {
     while (atomic_load_explicit(&a->null_run, memory_order_acquire)) {
         t += 5000000; uint64_t now = now_ns();
         if (t > now) usleep((useconds_t)((t - now) / 1000)); else if (now - t > 100000000) t = now;
-        pull(a, scratch, bytes);
+        if (pull_begin(a)) { pull(a, scratch, bytes); pull_end(a); }
     }
     return NULL;
 }
@@ -288,6 +297,10 @@ static Result au_open_at(void *g, void *ev, const char *name, const uint8_t *par
     pthread_create(&a->notify_th, NULL, event_notify, a);
     if (ev) hle_bind_system_event(ev, 1);   // Buffer release event: bind a kernel event on the guest thread (auto-clear), afterwards signaled by the audio thread
     objmap_put(g, a);
+    // the SDK's AudioOut starts with a word that is non-zero while it is open (its session), and games read it: Xenoblade Chronicles 3 stops and closes an
+    // output only when that word is set (main+0x11ecd98), then clears it. Left zero, every operation mode change opened another output beside the old ones,
+    // which kept playing the buffers it then set up again for the new one (crashes in the device callback), until the host's limit of AOMAX
+    dm_guest_write_prepare(g, 4); *(volatile uint32_t *)g = 1;
     pthread_mutex_lock(&g_aos_lock);
     int slot = -1; for (int i = 0; i < AOMAX; i++) if (!g_aos[i]) { slot = i; break; }
     if (slot < 0) die("more than %d AudioOuts open at once", AOMAX);
@@ -338,6 +351,7 @@ static void au_close(void *g, void *lr) {
     for (int i = 0; i < AOMAX; i++) if (g_aos[i] == a) g_aos[i] = NULL;
     pthread_mutex_unlock(&g_aos_lock);
     if (a->au) { AudioUnitUninitialize(a->au); AudioComponentInstanceDispose(a->au); }
+    while (atomic_load_explicit(&a->pulling, memory_order_acquire)) sched_yield();   // a late device callback still in pull() (pull_begin)
     dispatch_release(a->notify_sem);
     if (a->rel_sem) dispatch_release(a->rel_sem);
     pthread_mutex_destroy(&a->m); free(a);
@@ -376,7 +390,10 @@ HLE_FORCE("_ZN2nn5audio20AppendAudioOutBufferEPNS0_8AudioOutEPNS0_14AudioOutBuff
     uint32_t qt = atomic_load_explicit(&a->q_tail, memory_order_relaxed);
     uint32_t qh = atomic_load_explicit(&a->q_head, memory_order_acquire);
     int ok = qt - qh < QMAX;
-    if (ok) { a->q[qt & (QMAX - 1)] = b; atomic_store_explicit(&a->q_tail, qt + 1, memory_order_release); }
+    // the buffer's data pointer and size are taken now, as the audout service does: the game's AudioOutBuffer is its own to change once appended (Xenoblade
+    // Chronicles 3 set its buffers up again for the output it opened after an operation mode change while they were queued, and the device callback copied from a
+    // null pointer); the struct's address stays the buffer's identity for GetReleasedAudioOutBuffer
+    if (ok) { a->q[qt & (QMAX - 1)].b = b; a->q[qt & (QMAX - 1)].ptr = b->ptr; a->q[qt & (QMAX - 1)].size = b->size; atomic_store_explicit(&a->q_tail, qt + 1, memory_order_release); }
     pthread_mutex_unlock(&a->m);
     return ok;      // bool: false when the queue is full (the real device has a limit too)
 }

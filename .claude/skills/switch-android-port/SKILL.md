@@ -51,7 +51,8 @@ Installing, launching and the basic control-file lines are in `nx2android-dev/re
 - **Scripts:**
   - `scripts/ctl.sh 'X' 'B~0.15'` appends lines in one write.
   - An unknown key such as `none~0.1` logs `[RED]` but still waits its hold, so it works as a delay between lines.
-  - Presses of 0.2 s worked for NEO; `nx2android-dev` recommends 0.3–0.4 s to be safe. `adb shell input tap` is too short: use `input swipe x y x y 150` for a held touch.
+  - Presses of 0.2 s worked for NEO, but Viractal missed short ones: 0.4 s is the safe default.
+  - `adb shell input tap` is too short for the game's own touch screen (use `input swipe x y x y 150` for a held touch). It is enough for the front end, whose overlay buttons, pause menu and keyboard act when the finger lifts.
 - **Getting to gameplay:** use `scripts/boot_to_gameplay.sh DETECTOR.py`, with a detector written for the game (`scripts/detect_neo.py` is the example).
   - A brightness test passed on NEO's colourful title screen. Check the detector against a title and a gameplay screenshot.
   - It must pass twice in a row.
@@ -73,7 +74,9 @@ Installing, launching and the basic control-file lines are in `nx2android-dev/re
 | Flat odd colour where a texture should be | `[alias] stale read` lines (textures over the same memory with other descriptions are separate images). The fallback textures are black, so a non-black flat colour isn't the fallback | in NEO this was the LRZ case, not aliasing |
 | Frames never appear; every present waits 1 s | present paths that return early | the present ticket must complete on every path |
 | Every draw skipped as "no program" | replay counters | NVN binds programs by stage mask: replace only the masked stages |
+| A model drawn as a flat black silhouette; `shader … is not in the bundle` lines | pass dumps: depth there, G-buffer albedo black = its G-buffer draw was skipped | shaders whose code is in no game file (Xenoblade Chronicles 3: effects and model materials). The app captures them (`captured_shaders/`); port again with `--install` to translate them in |
 | No sound | "silent sink" in the log | real output defaulted on for iOS only |
+| Crash in the audio device callback, or "more than 8 AudioOuts open", after the pause menu's mode switch | count `OpenAudioOut` against `Close` lines | the game closes an output only when its `AudioOut` struct is marked open (first word non-zero, as the SDK leaves it): unmarked, every mode change opened another one beside the old |
 
 How to work a bug:
 1. **Make it countable first.** Turn "it flickers sometimes" into "58 of 118 frames bad" with `rec_flicker.py`, or with a colour-box count over frame shots (`scripts/count_matching_frames.py`). Every change is then a number.

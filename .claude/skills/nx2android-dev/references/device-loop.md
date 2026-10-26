@@ -30,14 +30,16 @@ Append lines to `$F/ctl.txt` (read from the end of the file, every 100 ms):
 
 | Line | Does |
 |---|---|
-| `A~0.4`, `L+R~0.4`, `Up~0.3`, `Plus~0.4`, `LUp~0.8` | Press buttons / stick for the hold time. Hold at least 0.3–0.4 s: shorter presses get missed, and `adb shell input keyevent` presses are too short for the game. |
+| `A~0.4`, `L+R~0.4`, `Up~0.3`, `Plus~0.4`, `LUp~0.8` | Press buttons / stick for the hold time. 0.2 s worked for NEO, but Viractal missed short presses: 0.4 s is the safe default. `adb shell input keyevent` presses are too short for the game. |
 | `drag x0 y0 x1 y1 [s]` | One-finger drag in the game's touch screen (fractions) |
 | `env KEY=VALUE` | Set a switch live (`DM_VK_TRACE_PASS=-2` lists passes, `=N` traces one; `DM_VK_PASSDUMP=1`; `DM_VK_SHOTS=N` shoots the next N presents; `DM_FPS_PIN=40`) |
 | `shot <path>`, `passdump <n>`, `texdump <path%d>` | Frame captures |
 
-DM_CTL presses go to the game's pad, not to the front end: to test the overlay, pause menu or text entry use `adb shell input tap x y` (screen pixels), `input text …` (keyboard letters) and `input keyevent KEYCODE_DPAD_* / KEYCODE_BUTTON_*` (controller keys; Nintendo layout by position: `BUTTON_B` = A, `BUTTON_A` = B, `BUTTON_X` = Y, `START` = +, `SELECT` = −).
+DM_CTL presses go to the game's pad, not to the front end: to test the overlay, pause menu or text entry use `adb shell input tap x y` (screen pixels; enough for the front end, which acts when the finger lifts, while a held touch for the game itself needs `input swipe x y x y 150`), `input text …` (keyboard letters) and `input keyevent KEYCODE_DPAD_* / KEYCODE_BUTTON_*` (controller keys; Nintendo layout by position: `BUTTON_B` = A, `BUTTON_A` = B, `BUTTON_X` = Y, `START` = +, `SELECT` = −).
 
 Before concluding a game is soft-locked, read the screen: Viractal's "Hey! Not that way!" was the game rejecting a wrong choice.
+
+For finding what is wrong once it runs (validation layer, LRZ flicker, frame shots, pass dumps, performance and soak checks, the device scripts that boot a game to gameplay), use the switch-android-port skill.
 
 ## Helpers in devtools/
 

@@ -1,6 +1,6 @@
 ---
 name: nx2android-dev
-description: How to add a new game profile to nx2android (port another Switch game to Android) or improve the shared core (the Android runtime, the Vulkan backend, the Horizon host, the rewriter, the shader tools, the porter or the GUI). Use whenever the task is to bring up, port, fix or tune a game on Android, add or edit a profile under nxnative/dm/games/, edit an android.tsv, fix a crash, a rendering bug, missing shaders, input, audio or performance on the device, or change porter/, gui/, packaging/ or nxnative/dm/android/ — even if the user only says "make <game> work", "port <game>", "it crashes at …" or "fix the flicker".
+description: How to add a new game profile to nx2android (port another Switch game to Android) or improve the shared core (the Android runtime, the Vulkan backend, the Horizon host, the rewriter, the shader tools, the porter or the GUI). Use whenever the task is to port or bring up a game on Android, add or edit a profile under nxnative/dm/games/ or an android.tsv, decide whether a fix belongs in a profile or the core, make a core change (missing SDK/NVN functions, shader readers or the translator, input, the overlay, the pause menu), install a build on the device, or change porter/, gui/, packaging/ or nxnative/dm/android/ — even if the user only says "make <game> work" or "port <game>". Chasing a symptom on the device (flicker, crashes in the app, refused submissions, stutter) or measuring speed and stability is the switch-android-port skill's; it sends the fix back here.
 ---
 
 # nx2android: game profiles and the core
@@ -20,6 +20,7 @@ A fix that only one game needs today is still a core fix when it follows the sem
 - New game → [references/new-game-profile.md](references/new-game-profile.md)
 - Core change → [references/core-changes.md](references/core-changes.md)
 - Either way, testing on the device → [references/device-loop.md](references/device-loop.md)
+- Chasing a symptom on the device (flicker, crashes in the app, refused submissions, stutter), measuring speed or stability → the **switch-android-port** skill ([.claude/skills/switch-android-port](../switch-android-port/SKILL.md)): playbooks, every debug switch, the NEO case study and device scripts.
 
 ## Rules that always hold
 

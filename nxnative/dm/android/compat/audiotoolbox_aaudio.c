@@ -56,7 +56,17 @@ static aaudio_data_callback_result_t on_data(AAudioStream *st, void *ud, void *a
 static void on_error(AAudioStream *st, void *ud, aaudio_result_t err) {
     (void)st; (void)ud; __android_log_print(ANDROID_LOG_WARN, "dmhost", "AAudio stream error %d (%s): the host's watchdog restarts it", err, AAudio_convertResultToText(err));
 }
-static void close_stream(AudioUnit u) { if (u->st) { AAudioStream_requestStop(u->st); AAudioStream_close(u->st); u->st = NULL; } }
+// requestStop only asks: the data callback may still be running after it returns, and the host frees the output it pulls from once the unit is stopped
+// (hle_audio.c au_close; games close and open outputs when the operation mode changes). So the stream is closed only once it is stopped (or after a second)
+static void close_stream(AudioUnit u) {
+    if (!u->st) return;
+    if (AAudioStream_requestStop(u->st) == AAUDIO_OK) {
+        aaudio_stream_state_t s = AAudioStream_getState(u->st);
+        for (int i = 0; i < 10 && s != AAUDIO_STREAM_STATE_STOPPED && s != AAUDIO_STREAM_STATE_DISCONNECTED && s != AAUDIO_STREAM_STATE_CLOSED; i++)
+            if (AAudioStream_waitForStateChange(u->st, s, &s, 100000000) != AAUDIO_OK) break;
+    }
+    AAudioStream_close(u->st); u->st = NULL;
+}
 
 OSStatus AudioOutputUnitStart(AudioUnit u) {
     close_stream(u);   // a start after a stall (the watchdog's retry) opens a fresh stream

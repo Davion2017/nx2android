@@ -195,11 +195,13 @@ NVN(nvnMemoryPoolBuilderSetDevice, void, NVNmemoryPoolBuilder *b, NVNdevice *d) 
 NVN(nvnMemoryPoolBuilderSetStorage, void, NVNmemoryPoolBuilder *b, void *m, size_t n) { ((pool_builder_t *)b)->mem = m; ((pool_builder_t *)b)->size = n; }
 NVN(nvnMemoryPoolBuilderSetFlags, void, NVNmemoryPoolBuilder *b, int f) { ((pool_builder_t *)b)->flags = f; }
 static uint8_t *vpool_reserve(const pool_t *o); static void vpool_release(const pool_t *o);   // sparse virtual pools, see MapVirtual
+static void replay_lock(void); static void replay_unlock(void);   // the replay's state, from a game thread (see "Asynchronous replay")
+static void nvn_drain(void);
 NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBuilder *b) {
     const pool_builder_t *s = (const pool_builder_t *)b; pool_t *o = (pool_t *)p;
     o->magic = MAGIC('P', 'O', 'O', 'L'); o->flags = s->flags; o->mem = s->mem; o->size = s->size;
     if (!o->mem && (o->flags & 0x200)) { uint8_t *vr = vpool_reserve(o); if (vr) o->mem = vr; }   // a sparse virtual pool's own address range (see MapVirtual)
-    else if (o->mem) { mtl_pool_add(o->mem, o->size); nvn_dirty_add_range(o->mem, o->size); }
+    else if (o->mem) { replay_lock(); mtl_pool_add(o->mem, o->size); replay_unlock(); nvn_dirty_add_range(o->mem, o->size); }
     if (!o->mem && !(o->flags & 0x200)) LOG("[RED] MemoryPoolInitialize: non-virtual pool has no storage flags=%#x size=%#llx", o->flags, o->size);
     if (getenv("DM_NVN_VLOG")) { LOG("[nvn] MemoryPool %p mem=%p size=%#llx flags=%#x", (void *)p, (void *)o->mem, (unsigned long long)o->size, o->flags); void dm_backtrace(uint64_t fp); dm_backtrace((uint64_t)__builtin_frame_address(0)); }
     OLOG("MemoryPool %p mem=%p size=%#llx flags=%#x", (void *)p, (void *)o->mem, o->size, o->flags);
@@ -208,7 +210,8 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
 static void fl_add(const uint8_t *a, uint64_t n); static void fl_drop(const uint8_t *a, uint64_t n);   // flushed ranges, see nvn_flushed
 NVN(nvnMemoryPoolFinalize, void, NVNmemoryPool *p) { if (((pool_t *)p)->flags & 0x200) vpool_release((pool_t *)p);
     if (((pool_t *)p)->mem && !(((pool_t *)p)->flags & 0x200)) {   // A virtual pool's storage is borrowed from a physical pool; do not unregister it
- nvn_dirty_remove_range(((pool_t *)p)->mem); mtl_pool_del(((pool_t *)p)->mem); fl_drop(((pool_t *)p)->mem, ((pool_t *)p)->size); } mtl_alias_drop_pool(p); ((pool_t *)p)->magic = 0; }
+ nvn_dirty_remove_range(((pool_t *)p)->mem); replay_lock(); mtl_pool_del(((pool_t *)p)->mem); replay_unlock(); fl_drop(((pool_t *)p)->mem, ((pool_t *)p)->size); }
+    replay_lock(); mtl_alias_drop_pool(p); replay_unlock(); ((pool_t *)p)->magic = 0; }
 static void ft_flush(const uint8_t *a, uint64_t n);
 NVN(nvnMemoryPoolFlushMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) {   // see ft_add and nvn_flushed
     const pool_t *o = (const pool_t *)p;
@@ -515,7 +518,7 @@ static void read_texels(const tex_t *o, const view_t *v, const NVNcopyRegion *r,
     if (!row) row = wb;
     if (!img) img = row * hb;
     unsigned level = v && v->set_levels ? (unsigned)v->base_level : 0, layer0 = v && v->set_layers ? (unsigned)v->min_layer : 0;
-    mtl_read_texels(o, level, layer0, r, dst, (size_t)row, (size_t)img);
+    nvn_drain(); replay_lock(); mtl_read_texels(o, level, layer0, r, dst, (size_t)row, (size_t)img); replay_unlock();   // after every submission before it
 }
 NVN(nvnTextureReadTexels, void, const NVNtexture *t, const NVNtextureView *v, const NVNcopyRegion *r, void *dst) {
     read_texels(CTX(t), (const view_t *)v, r, dst, 0, 0);
@@ -580,6 +583,9 @@ static void pk_drop(const void *p) {
     if (k) { CFDictionaryRemoveValue(g_pk, p); free(k); }
     pthread_mutex_unlock(&g_pk_mu);
 }
+// Set by a backend whose shaders are translated before the game runs (Android's Vulkan bundle, gfx_vk_shader.c): called at SetShaders for each stage whose key is known then, while the
+// control section is still the game's to read, so a shader whose code no game file holds can be saved and translated by the next port (Xenoblade Chronicles 3 sets hundreds)
+void (*g_nvn_on_shader)(const uint8_t key[8], const void *control, uint64_t data, uint32_t ncode);
 // mapped = 1: computed only when the code area is in a registered memory pool (at SetShaders: Mario sets some programs with an unmapped address first and fills it in before the first draw)
 static int keys_hash(const NVNshaderData *sd, int mapped, uint8_t out[8]) {
     uint32_t ncode = 0; void *mb; uint64_t mo;
@@ -613,6 +619,7 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
     k->ok = 0;
     for (int i = 0; i < n; i++) {
         if (keys_hash(&sd[i], 1, k->key[i])) k->ok |= (uint8_t)(1u << i);
+        if (g_nvn_on_shader && (k->ok >> i & 1)) { uint32_t ncode; memcpy(&ncode, (const uint8_t *)sd[i].control + 0x704, 4); g_nvn_on_shader(k->key[i], sd[i].control, sd[i].data, ncode); }
         // DM_NVN_SHDUMP (debugging): keep a copy of the control section so the replay layer can save shaders missing from the map (never freed)
         if (dump && sd[i].control) { void *c = malloc(0x880); memcpy(c, sd[i].control, 0x880); o->sd[i].control = c; }
     }
@@ -625,7 +632,8 @@ NVN(nvnSyncInitialize, NVNboolean, NVNsync *s, NVNdevice *d) { (void)d; *(sync_t
 NVN(nvnSyncFinalize, void, NVNsync *s) { ((sync_t *)s)->magic = 0; }
 NVN(nvnSyncSetDebugLabel, void, NVNsync *s, const char *l) { (void)s; (void)l; }
 // Fence = "all commands previously submitted to the queue have completed": record the fence value of the most recent submit
-NVN(nvnQueueFenceSync, void, NVNqueue *q, NVNsync *s, NVNsyncCondition c, int f) { (void)q; (void)c; (void)f; ((sync_t *)s)->fenced = 1; ((sync_t *)s)->fence = mtl_last_fence(); }
+static uint64_t nvn_fence_now(void); static int nvn_fence_wait(uint64_t f, uint64_t timeout_ns);
+NVN(nvnQueueFenceSync, void, NVNqueue *q, NVNsync *s, NVNsyncCondition c, int f) { (void)q; (void)c; (void)f; ((sync_t *)s)->fenced = 1; ((sync_t *)s)->fence = nvn_fence_now(); }
 // A sync object that was never fenced waits until timeout, as on a real device; a fenced one is released only after the GPU has actually completed up to that fence value
 // A GPU-side wait on a sync: the host has a single Metal queue that executes submissions in order, so commands before the fence are always done first and nothing needs waiting. A sync not fenced yet (fenced later by another thread) is not waited for here; logged once
 NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) { (void)q; static int once; if (!((const sync_t *)s)->fenced && !once++) LOG("[nvn] QueueWaitSync: the sync object has no fence yet, the host does not wait"); return 1; }
@@ -635,8 +643,8 @@ NVN(nvnCommandBufferSaveZCullData, void, NVNcommandBuffer *c, NVNbufferAddress a
 NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
     const sync_t *o = (const sync_t *)s;
     if (!o->fenced) return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
-    if (mtl_wait(o->fence, 0)) return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED;
-    return mtl_wait(o->fence, timeout) ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
+    if (nvn_fence_wait(o->fence, 0)) return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED;
+    return nvn_fence_wait(o->fence, timeout) ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
 }
 NVN(nvnEventBuilderSetDefaults, void, NVNeventBuilder *b) { memset(b, 0, sizeof(ev_builder_t)); }
 NVN(nvnEventBuilderSetStorage, void, NVNeventBuilder *b, const NVNmemoryPool *p, int64_t off) { *(ev_builder_t *)b = (ev_builder_t){(const pool_t *)p, off}; }
@@ -677,7 +685,7 @@ NVN(nvnQueueGetError, NVNqueueGetErrorResult, NVNqueue *q, NVNqueueErrorInfo *in
     (void)q; if (info) memset(info, 0, sizeof *info); return NVN_QUEUE_GET_ERROR_RESULT_GPU_NO_ERROR;
 }
 NVN(nvnQueueFlush, void, NVNqueue *q) { (void)q; }
-NVN(nvnQueueFinish, void, NVNqueue *q) { (void)q; mtl_finish(); }
+NVN(nvnQueueFinish, void, NVNqueue *q) { (void)q; nvn_drain(); mtl_finish(); }
 
 // ---------- Command buffer: record into the game's command memory, perform CPU-visible side effects at submit ----------
 #define CB(c) ((cmd_t *)(c))
@@ -1149,11 +1157,83 @@ void dm_gfx_suspend(int on) {
 // submits on both from two threads; the second submission arrived while the first was replaying and the host stopped with "submit re-entered" at the ninth frame. NVN orders work on different queues only
 // through syncs, so replaying the two queues' submissions in lock order is one valid order
 static pthread_mutex_t g_sub_mu = PTHREAD_MUTEX_INITIALIZER;
+// Asynchronous replay (DM_NVN_ASYNC=1, off by default): QueueSubmitCommands and QueuePresentTexture hand their work to a replay thread and return, so the game's render
+// thread goes on (records the next frame) while the last one is replayed. NVN allows it: the GPU too runs a submission after the call returns, and the game keeps command memory,
+// buffers and pools alive until a sync it fenced after them signals. A game that waits for each frame's GPU work before it submits the next gains nothing (Xenoblade Chronicles 3:
+// its frame is the replay plus the GPU's tail either way, see the timeline below; its field held 30 fps with replay on the render thread as well). A sync fenced now names the last job queued (ASYNC_FENCE | job): it signals once that job is replayed and the GPU has done its work.
+// Whatever else touches the replay's state from the game's threads (memory pools made and destroyed, CPU texel readback) takes g_sub_mu, which the replay thread holds per job
+enum { JOB_SUBMIT, JOB_PRESENT }; enum { JOB_RING = 4096 };
+#define ASYNC_FENCE (1ull << 63)
+typedef struct { int kind, n; uint64_t *h; NVNqueue *q; const tex_t *tex; double period; int crop[4]; uint64_t *ticket; uint64_t t_enq; } nvn_job;
+// The frame's timeline under asynchronous replay, logged every 300 waits: from a sync wait's return to the next submission (the game), the job's wait in the queue,
+// its replay, and what the GPU still had to do after it (Xenoblade Chronicles 3 waits for each frame's GPU work before submitting the next, so its frame is all four)
+static uint64_t g_tl_enq, g_tl_start, g_tl_end, g_tl_wret, g_tl_sum[4], g_tl_n, g_tl_jobs, g_tl_lastjob;
+static nvn_job *g_jobs; static int g_njob, g_capjob;
+static uint64_t g_job_enq, g_job_done, g_job_fence[JOB_RING];   // jobs queued and replayed so far; the commit fence each left (by job number)
+static pthread_mutex_t g_job_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_job_cv = PTHREAD_COND_INITIALIZER, g_jobdone_cv = PTHREAD_COND_INITIALIZER;
+static int nvn_async(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_ASYNC"); on = e && atoi(e); } return on; }
+static void submit_now(NVNqueue *q, int n, const NVNcommandHandle *h);
+static void *replay_main(void *arg) {
+    (void)arg; pthread_setname_np(pthread_self(), "nvn replay");
+    for (;;) {
+        pthread_mutex_lock(&g_job_mu); while (!g_njob) pthread_cond_wait(&g_job_cv, &g_job_mu);
+        nvn_job j = g_jobs[0]; pthread_mutex_unlock(&g_job_mu);
+        if (j.kind == JOB_SUBMIT) { uint64_t ts = now_ns(); submit_now(j.q, j.n, (const NVNcommandHandle *)j.h); free(j.h); g_tl_enq = j.t_enq; g_tl_start = ts; g_tl_end = now_ns(); }
+        else { gfx_enter(); uint64_t t0 = now_ns(); uint64_t tk = mtl_present(j.tex, j.period, j.crop); __atomic_store_n(j.ticket, tk, __ATOMIC_RELEASE); gfx_leave(); atomic_fetch_add(&g_nvn_ns, now_ns() - t0); }
+        pthread_mutex_lock(&g_job_mu);
+        memmove(g_jobs, g_jobs + 1, sizeof *g_jobs * (size_t)--g_njob); g_job_done++; g_job_fence[g_job_done % JOB_RING] = mtl_last_fence();
+        pthread_cond_broadcast(&g_jobdone_cv); pthread_mutex_unlock(&g_job_mu);
+    }
+    return NULL;
+}
+static uint64_t job_push(nvn_job j) {   // → the job's number
+    static pthread_once_t once = PTHREAD_ONCE_INIT; void replay_start(void); pthread_once(&once, replay_start);
+    pthread_mutex_lock(&g_job_mu);
+    if (g_njob == g_capjob) { g_capjob = g_capjob ? 2 * g_capjob : 64; g_jobs = realloc(g_jobs, sizeof *g_jobs * (size_t)g_capjob); }
+    j.t_enq = now_ns(); g_jobs[g_njob++] = j; uint64_t id = ++g_job_enq;
+    pthread_cond_signal(&g_job_cv); pthread_mutex_unlock(&g_job_mu);
+    return id;
+}
+void replay_start(void) { pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 8 << 20); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&t, &a, replay_main, NULL)) die("nvn replay thread"); pthread_attr_destroy(&a); LOG("[nvn] asynchronous replay: submissions and presents run on a replay thread"); }
+// Wait until job `id` has been replayed (0 = already, 1 = within the timeout, -1 = timed out)
+static int job_wait(uint64_t id, uint64_t timeout_ns) {
+    pthread_mutex_lock(&g_job_mu);
+    if (g_job_done >= id) { pthread_mutex_unlock(&g_job_mu); return 0; }
+    if (!timeout_ns) { pthread_mutex_unlock(&g_job_mu); return -1; }
+    struct timespec dl; clock_gettime(CLOCK_REALTIME, &dl); uint64_t ns = timeout_ns > 100000000000ull ? 100000000000ull : timeout_ns;
+    dl.tv_sec += (time_t)(ns / 1000000000ull); dl.tv_nsec += (long)(ns % 1000000000ull); if (dl.tv_nsec >= 1000000000L) { dl.tv_sec++; dl.tv_nsec -= 1000000000L; }
+    while (g_job_done < id) if (pthread_cond_timedwait(&g_jobdone_cv, &g_job_mu, &dl) && g_job_done < id) { if (timeout_ns > 100000000000ull) { clock_gettime(CLOCK_REALTIME, &dl); dl.tv_sec += 100; continue; } pthread_mutex_unlock(&g_job_mu); return -1; }
+    pthread_mutex_unlock(&g_job_mu); return 1;
+}
+// The fence a sync takes now: the last job queued, or the last commit when replay is synchronous
+static uint64_t nvn_fence_now(void) { return nvn_async() ? ASYNC_FENCE | g_job_enq : mtl_last_fence(); }
+// mtl_wait for a fence nvn_fence_now gave: first the job's replay, then its commit fence on the GPU (a job too old for the ring has long been replayed: the latest fence covers it)
+static int nvn_fence_wait(uint64_t f, uint64_t timeout_ns) {
+    if (!(f & ASYNC_FENCE)) return mtl_wait(f, timeout_ns);
+    uint64_t id = f & ~ASYNC_FENCE, t0 = now_ns();
+    if (job_wait(id, timeout_ns) < 0) return 0;
+    pthread_mutex_lock(&g_job_mu); uint64_t real = g_job_done - id < JOB_RING ? g_job_fence[id % JOB_RING] : mtl_last_fence(); pthread_mutex_unlock(&g_job_mu);
+    uint64_t used = now_ns() - t0; int r = mtl_wait(real, timeout_ns == ~0ull ? ~0ull : timeout_ns > used ? timeout_ns - used : 0);
+    if (r && timeout_ns && g_tl_end > g_tl_start && g_tl_enq) { uint64_t now = now_ns();   // the frame's timeline (see g_tl_enq)
+        if (g_tl_wret && g_tl_enq > g_tl_wret) { g_tl_jobs += g_job_enq - g_tl_lastjob; g_tl_sum[0] += g_tl_enq - g_tl_wret; g_tl_sum[1] += g_tl_start - g_tl_enq; g_tl_sum[2] += g_tl_end - g_tl_start; g_tl_sum[3] += now - g_tl_end; g_tl_n++; }
+        g_tl_wret = now; g_tl_lastjob = g_job_enq;
+        if (g_tl_n == 300) { LOG("[timeline] per frame: game gap %.1f ms, queue delay %.1f, replay %.1f, GPU tail %.1f; %.1f jobs", g_tl_sum[0] / 3e8, g_tl_sum[1] / 3e8, g_tl_sum[2] / 3e8, g_tl_sum[3] / 3e8, g_tl_jobs / 300.0); memset(g_tl_sum, 0, sizeof g_tl_sum); g_tl_n = 0; g_tl_jobs = 0; } }
+    return r;
+}
+static void nvn_drain(void) { if (nvn_async()) job_wait(g_job_enq, ~0ull); }   // every job queued so far replayed
+static void replay_lock(void) { if (nvn_async()) pthread_mutex_lock(&g_sub_mu); }
+static void replay_unlock(void) { if (nvn_async()) pthread_mutex_unlock(&g_sub_mu); }
 NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h) {
+    if (nvn_async()) { uint64_t *c = malloc(sizeof *c * (size_t)(n > 0 ? n : 1)); memcpy(c, h, sizeof *c * (size_t)(n > 0 ? n : 0)); ((queue_t *)q)->submits++;
+        job_push((nvn_job){JOB_SUBMIT, n, c, q}); return; }
+    submit_now(q, n, h);
+}
+static void submit_now(NVNqueue *q, int n, const NVNcommandHandle *h) {
     gfx_enter();
     pthread_mutex_lock(&g_sub_mu);
     uint64_t t0 = now_ns(), c0 = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID), i0, y0, s0 = thr_sys_ns(); thr_counts(&i0, &y0);
-    ((queue_t *)q)->submits++;
+    if (!nvn_async()) ((queue_t *)q)->submits++;
     mtl_sub_begin();
     nvn_ft_poll();
     mtl_sub_index((const uint64_t *)h, n);
@@ -1288,9 +1368,10 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
     }
     g_acq_wait_ns += wait; trow(g_frame, "@late_ms", wait ? (now_ns() - at) / 1e6 : 0);
     // The previous present of this texture has not yet been processed by the present thread (display cannot keep up, a whole swapchain round behind): wait for it to be returned, then hand it to the game to draw
-    uint64_t tk = *idx < 4 ? o->ticket[*idx] : 0;
+    uint64_t tk = *idx < 4 ? __atomic_load_n(&o->ticket[*idx], __ATOMIC_ACQUIRE) : 0;
+    if (tk & ASYNC_FENCE) { uint64_t w0 = now_ns(); job_wait(tk & ~ASYNC_FENCE, ~0ull); g_pq_wait_ns += now_ns() - w0; tk = __atomic_load_n(&o->ticket[*idx], __ATOMIC_ACQUIRE); }   // its present still queued
     if (tk) { uint64_t w0 = now_ns(); mtl_present_wait(tk); g_pq_wait_ns += now_ns() - w0; }
-    if (s) { ((sync_t *)s)->fenced = 1; ((sync_t *)s)->fence = mtl_last_fence(); }   // The swapchain texture becomes available once the commits before this point have completed
+    if (s) { ((sync_t *)s)->fenced = 1; ((sync_t *)s)->fence = nvn_fence_now(); }   // The swapchain texture becomes available once the commits before this point have completed
     if (!g_fs_start) { g_fs_start = now_ns(); g_fs_wait = pace_ns; dm_perf_frame_start(pace_ns); }   // the frame starts when the first acquire after a present returns: on a display-link tick when on time
     return NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS;
 }
@@ -1676,7 +1757,11 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     }
     gfx_enter();
     uint64_t t0 = now_ns();
-    if (idx >= 0 && idx < o->ntex && idx < 4) o->ticket[idx] = mtl_present(CTX(o->tex[idx]), present_period(o) / 1e9, o->crop);   // enqueue only, return immediately
+    if (idx >= 0 && idx < o->ntex && idx < 4) {
+        if (nvn_async()) { nvn_job j = {JOB_PRESENT, 0, NULL, q, CTX(o->tex[idx]), present_period(o) / 1e9, {0}, &o->ticket[idx]}; memcpy(j.crop, o->crop, sizeof j.crop);
+            o->ticket[idx] = ASYNC_FENCE | (g_job_enq + 1); job_push(j); }   // (the job overwrites the ticket with the present's own when it runs)
+        else o->ticket[idx] = mtl_present(CTX(o->tex[idx]), present_period(o) / 1e9, o->crop);   // enqueue only, return immediately
+    }
     gfx_leave();
     atomic_fetch_add(&g_nvn_ns, now_ns() - t0);
     uint64_t f = g_frame, ps, dr; mtl_stats(&ps, &dr);
@@ -1861,11 +1946,11 @@ static uint8_t *vpool_reserve(const pool_t *o) {   // → the reserved range, or
     return a;
 }
 static void vpool_release(const pool_t *o) {
-    pthread_mutex_lock(&g_vp_mu); struct vpool *v = vpool_of(o);
+    replay_lock(); pthread_mutex_lock(&g_vp_mu); struct vpool *v = vpool_of(o);
     if (v) { for (int k = 0; k < v->nrun; k++) mtl_pool_del(v->base + v->run[k].lo); munmap(v->base, v->len);
         for (uint64_t l = 0; l < (v->size + (2u << 20) - 1) >> 21; l++) free(v->pt[l]);
         free(v->pt); memset(v, 0, sizeof *v); }
-    pthread_mutex_unlock(&g_vp_mu);
+    pthread_mutex_unlock(&g_vp_mu); replay_unlock();
 }
 // Mapped runs of a sparse pool: [lo, hi) sorted, disjoint, adjacent runs merged. Caller holds g_vp_mu
 static void vrun_set(struct vpool *v, uint64_t lo, uint64_t hi, int mapped) {
@@ -1925,9 +2010,9 @@ static int vpool_map(struct vpool *v, const map_req *r) {   // caller holds g_vp
 }
 NVN(nvnMemoryPoolMapVirtual, NVNboolean, NVNmemoryPool *p, int n, const NVNmappingRequest *rq) {
     pool_t *o = (pool_t *)p; const map_req *r = (const map_req *)rq;
-    pthread_mutex_lock(&g_vp_mu); struct vpool *v = vpool_of(o); int ok = 1;
+    replay_lock(); pthread_mutex_lock(&g_vp_mu); struct vpool *v = vpool_of(o); int ok = 1;   // (the replay lock first: the replay thread takes g_vp_mu under it)
     for (int i = 0; v && i < n && ok; i++) ok = vpool_map(v, &r[i]);
-    pthread_mutex_unlock(&g_vp_mu);
+    pthread_mutex_unlock(&g_vp_mu); replay_unlock();
     if (v) return (NVNboolean)ok;
     for (int i = 0; i < n; i++) {
         const pool_t *ph = (const pool_t *)r[i].phys;
@@ -2088,7 +2173,14 @@ NVN(nvnCommandBufferBeginTransformFeedback, void, NVNcommandBuffer *c, NVNbuffer
 NVN(nvnCommandBufferEndTransformFeedback, void, NVNcommandBuffer *c, NVNbufferAddress a) { *REC(c, OP_TF_STATE, p_tf_state) = (p_tf_state){1, 0, a}; }
 NVN(nvnCommandBufferPauseTransformFeedback, void, NVNcommandBuffer *c, NVNbufferAddress a) { *REC(c, OP_TF_STATE, p_tf_state) = (p_tf_state){2, 0, a}; }
 NVN(nvnCommandBufferResumeTransformFeedback, void, NVNcommandBuffer *c, NVNbufferAddress a) { *REC(c, OP_TF_STATE, p_tf_state) = (p_tf_state){3, 0, a}; }
-NVN(nvnCommandBufferDrawTransformFeedback, void, NVNcommandBuffer *c, NVNdrawPrimitive m, NVNbufferAddress a) { (void)c; (void)m; (void)a; ONCE_LOG("[RED] DrawTransformFeedback: drawing the captured vertex count is not implemented, nothing drawn"); }
+// Draws as many vertices as the captures ended into the control buffer a wrote (Xenoblade Chronicles 3 draws its GPU particles this way). The Vulkan replay counts them (gfx_vk_exec.c draw_tf);
+// the Metal replay does not yet, and skips the record
+NVN(nvnCommandBufferDrawTransformFeedback, void, NVNcommandBuffer *c, NVNdrawPrimitive m, NVNbufferAddress a) {
+#if defined(__APPLE__)
+    ONCE_LOG("[RED] DrawTransformFeedback: drawing the captured vertex count is not implemented on Metal, nothing drawn");
+#endif
+    *REC(c, OP_DRAW_TF, p_draw_tf) = (p_draw_tf){(int32_t)m, 0, a};
+}
 
 // Device: combined texture handle = texture id | sampler id << 20 (same encoding as the separate handles)
 NVN(nvnDeviceGetTextureHandle, NVNtextureHandle, const NVNdevice *d, int tex, int samp) { (void)d; return (NVNtextureHandle)((uint64_t)(uint32_t)tex | (uint64_t)(uint32_t)samp << 20); }

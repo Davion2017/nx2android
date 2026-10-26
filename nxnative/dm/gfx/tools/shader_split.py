@@ -28,6 +28,8 @@
 #   · data.arc (Super Smash Bros. Ultimate, smash_arc.py): GLSLC outputs in its SSBH shader databases and BNSH in its effects and UI layouts, each of its current files (zstd) scanned, see smash_arc_jobs
 #   · PKZ (PlatinumGames, Bayonetta 3): shader objects (VSO / PSO / CSO / HSO / DSO, a control section and a code area each) in the DAT archives of the PKZ entries (Oodle Kraken, decoded by the
 #       game's own decoder in the Mac host), see pkz_entries, pgdat_members and pg_shader
+#   · Monolith archives (Xenoblade Chronicles 3: bf3.arh index + bf3.ard data): HCPS shader archives (a control section and a code area per stage, vertex / pixel per program) in the files and in
+#       their xbc1 streams (zstd / zlib), see arh_entries, ard_shaders and spch_shaders
 # Code area: 0x30 header + (graphics) 0x50 SPH + instructions; header magic 0x12345678 for graphics, 0x12345679 for compute. The control section starts with 0x98761234, +0x704 = code area length,
 #   +0x700 = start of the c1 constant segment within the code area; for compute +0x748 thread group xyz (u32 ×3), +0x754 shared memory bytes (checked one by one against PC reflection on D2R's 22 compute shaders).
 # Stage: BNSH uses the stage slot; BAHS uses bits 10..13 of SPH word 0 (1 vertex 2 hull 3 domain 4 geometry 5 pixel), and a compute header means compute.
@@ -830,6 +832,124 @@ def trinity_shaders(path, rel, packs, out):
                 else: red(f'/{rel}#{name}: file {k} has compression {comp} ({sz} → {n} bytes), which is not known')
                 scan_blob(data, f'/{rel}#{name}#{struct.unpack_from("<Q", d, hs[0] + 8 * k)[0]:016x}', out)
 
+MONO_ARD, ARH1, XBC1, HCPS = 'Monolith ard', b'arh1', b'xbc1', b'HCPS'
+def arh_entries(path):
+    """Monolith Soft's file archive, an index (.arh) beside the data (.ard) (Xenoblade Chronicles 3: bf3.arh / bf3.ard, 76,445 files in 9.7 GB; each DLC a bf3_dlcNN pair of its own), the format of
+    Xenoblade 2's (XbTool's FileArchive): 'arh1', then u32 words: +8 node count, +0xc / +0x10 string table offset / length, +0x14 / +0x18 node table offset / length, +0x1c file table offset,
+    +0x20 file count, +0x24 key ^ 0xf3f35353. The string and node tables are XORed word by word with the key. The paths are a trie in the node table ({i32 next, i32 prev}; a node with next < 0
+    ends a path: -next is its suffix in the string table, followed by the file index), read back from each end node. The file table: 0x18-byte entries {u64 offset in the .ard, u32 stored length,
+    u32 length, u32 type (0 stored, 2 an xbc1 container: 0x30-byte header, then the stream), u32 index}. → [(path, offset, stored length, length, type)], or None when path is no index"""
+    a = open(path, 'rb').read()
+    if a[:4] != ARH1: return None
+    w = list(struct.unpack_from(f'<{len(a) // 4}I', a)); key = w[9] ^ 0xF3F35353
+    for o, n in ((w[3], w[4]), (w[5], w[6])):
+        for i in range(o // 4, (o + n) // 4): w[i] ^= key
+    d = struct.pack(f'<{len(w)}I', *w)
+    nn, so, sl, no, _, fo, fc = w[2:9]; strt = d[so:so + sl]
+    nodes = list(struct.iter_unpack('<ii', d[no:no + 8 * nn])); names = {}
+    for i, (nx, pv) in enumerate(nodes):
+        if nx >= 0 or pv < 0: continue
+        e = strt.index(b'\0', -nx); ch, cur = [], i
+        while nodes[cur][0]: prev = nodes[cur][1]; ch.append(chr(cur ^ nodes[prev][0])); cur = prev
+        names[struct.unpack_from('<i', strt, e + 1)[0]] = ''.join(reversed(ch)) + strt[-nx:e].decode('utf-8', 'replace')
+    return [(names.get(i, f'#{i}'), off, csz, usz, t) for i, (off, csz, usz, t, _) in enumerate(struct.iter_unpack('<qIIII', d[fo:fo + 0x18 * fc]))]
+
+def ard_jobs(files, parts=64):
+    """Every file of every Monolith archive (an .ard with its .arh beside it), in ranges of about equal stored length. → ([(ard path, rel, (MONO_ARD, entries)), …], the .ard / .arh paths)"""
+    ar = [(p, r, arh_entries(p[:-1] + 'h')) for p, r in files if p.endswith('.ard') and os.path.exists(p[:-1] + 'h')]
+    ar = [x for x in ar if x[2] is not None]
+    jobs, step = [], sum(e[2] for _, _, es in ar for e in es) / parts
+    for p, r, es in ar:
+        cur, size = [], 0
+        for e in sorted(es, key=lambda e: e[1]):
+            cur.append(e); size += e[2]
+            if size >= step: jobs.append((p, r, (MONO_ARD, tuple(cur)))); cur, size = [], 0
+        if cur: jobs.append((p, r, (MONO_ARD, tuple(cur))))
+    return jobs, {x for p, _, _ in ar for x in (p, p[:-1] + 'h')}
+
+def xbc1(d, at=0):
+    """An xbc1 container: 'xbc1', u32 compression (0 stored, 1 zlib, 3 zstd), u32 length, u32 stored length, u32 hash, 28-byte name, the stream from +0x30"""
+    import zlib
+    t, usz, csz = struct.unpack_from('<III', d, at + 4); raw = d[at + 0x30:at + 0x30 + csz]
+    out = zstd_mod().decompress(raw) if t == 3 else zlib.decompress(raw) if t == 1 else raw if t == 0 else None
+    if out is None or len(out) != usz: raise ValueError(f'xbc1 compression {t}, {len(out or b"")} of {usz} bytes')
+    return out
+
+def spch_shaders(d, b, label):
+    """A Monolith shader archive ('HCPS', version 1010 in Xenoblade Chronicles 3; xc3_lib's Spch): u32 offset / count pairs from +8 of the SLCT offsets (8 bytes each, offset into the SLCT section
+    first), an unknown table, the SLCT section, the code section (xV4, the code areas) and the control sections (0x880 each), all relative to the HCPS. An SLCT: 'SLCT', u32, u32 count / offset of
+    strings, u32 count / offset of programs ({u32 offset, u32 length} of each program's NVSD), then from +0x28 u32 control offset / length and code offset / length of its programs, which follow each
+    other in both sections. An NVSD lists its stages from +0x18 (u32 offset / count of 20-byte entries {u32 stage index, u32 code offset, u32 code length, u32 control offset, u32 control length},
+    relative to the program's start in each section). A program's vertex / pixel stages are a pair"""
+    try:
+        ver, so, sc, _, _, slo, sll, xo, xl, uo, ul = struct.unpack_from('<11I', d, b + 4)
+    except struct.error: return None
+    if not (0 < sc < 0x100000 and b + max(so + 8 * sc, slo + sll, xo + xl, uo + ul) <= len(d)): return None   # 'HCPS' in other data
+    sl, xv4, ctls, out = d[b + slo:b + slo + sll], d[b + xo:b + xo + xl], d[b + uo:b + uo + ul], []
+    if xv4[:4] not in (GFX_MAGIC, CS_MAGIC): return None   # a PC build's archive (GLSL; XC3's first DLC still carries six .pcsmt files), which the Switch game never loads
+    for k in range(sc):
+        s = sl[struct.unpack_from('<I', d, b + so + 8 * k)[0]:]
+        if s[:4] != b'SLCT': red(f'{label} HCPS @{b:#x} (version {ver}): SLCT {k} has no magic')
+        uc, _, xc, _ = struct.unpack_from('<4I', s, 0x28)
+        for where, st, ctl, code in slct_programs(s, xv4, xc, ctls, uc, f'{label} HCPS @{b:#x} SLCT {k}', strict=True):
+            out.append((f'{label}#HCPS@{b:#x}#slct{k}#{where}', st, ctl, code))
+    return out
+
+def slct_programs(s, xv4, xc, ctls, uc, label, strict):
+    """The programs of an SLCT (s: its bytes on): each program's stages, their code areas from xv4[xc:] and control sections from ctls[uc:], the programs following each other in both.
+    → [('var<program>', stage, control, code)]; strict: a stage that does not check is a red line, else the whole SLCT is taken for no shader (None)"""
+    _, _, _, npr, opr = struct.unpack_from('<5I', s, 4); out = []
+    for p in range(npr):
+        po, pl = struct.unpack_from('<II', s, opr + 8 * p); nv = s[po:po + pl]
+        eo, en = struct.unpack_from('<II', nv, 0x18); xe = ue = 0
+        for si, co, cl, to, tl in (struct.unpack_from('<5I', nv, eo + 20 * i) for i in range(en)):
+            if not cl: continue
+            code, ctl = xv4[xc + co:xc + co + cl], ctls[uc + to:uc + to + tl]
+            st = 'cs' if code[:4] == CS_MAGIC else sph_stage(code) if code[:4] == GFX_MAGIC else None
+            why = 'no code area header' if not st else check(label, st, ctl, code)
+            if why and strict: red(f'{label} program {p} stage {si}: {why}')
+            if why: return None
+            out.append((f'var{p}', st, ctl, code)); xe, ue = max(xe, co + cl), max(ue, to + tl)
+        xc, uc = xc + xe, uc + (ue + 7 & ~7)   # control sections are 8-byte aligned (main's are 0x9e1, 0x87f … bytes long)
+    return out
+
+def slct_loose(d, label):
+    """SLCTs outside an HCPS, their offsets relative to the SLCT itself (Xenoblade Chronicles 3's main+0x14e01c0: three programs of the engine's own, 6 shaders, controls at +0x368, code at
+    +0x4000, used from the title screen on). Taken only when every stage checks (slct_programs), so an 'SLCT' in other data adds nothing"""
+    out = []
+    for m in re.finditer(b'SLCT', d):
+        b = m.start()
+        try:
+            uc, un, xc, xn = struct.unpack_from('<4I', d, b + 0x28)
+            if not (0 < un and 0 < xn and b + max(uc + un, xc + xn) <= len(d) and d[b + uc:b + uc + 4] == CTL_MAGIC and d[b + xc:b + xc + 4] in (GFX_MAGIC, CS_MAGIC)): continue
+            r = slct_programs(d[b:], d[b:], xc, d[b:], uc, f'{label} SLCT @{b:#x}', strict=False)
+        except struct.error: continue
+        if r: out += [(f'{label}#SLCT@{b:#x}#{w}', st, ctl, code) for w, st, ctl, code in r]
+    return out
+
+def mono_shaders(d, label, out, depth=0):
+    """Shader archives in a Monolith file: HCPS in the file itself (.wishp, .wimdo models, .wiefxa effects, .wipac) or in its xbc1 streams (.wismt model and .wismda map streams)"""
+    for m in re.finditer(HCPS, d):
+        r = spch_shaders(d, m.start(), label)
+        if r: out.extend(r)
+    if depth: return
+    for m in re.finditer(XBC1, d):
+        try: s = xbc1(d, m.start())
+        except Exception: continue   # 'xbc1' in other data (bad lengths, zlib / zstd errors)
+        mono_shaders(s, f'{label}#xbc1@{m.start():#x}', out, 1)
+
+def ard_shaders(path, rel, ents, out):
+    """A range of a Monolith archive's files (ard_jobs), each taken out of its xbc1 container and scanned (mono_shaders)"""
+    with open(path, 'rb') as f:
+        for name, off, csz, usz, t in ents:
+            f.seek(off); d = f.read(csz + (0x30 if t == 2 else 0))
+            if t == 2:
+                if d[:4] != XBC1: red(f'/{rel}{name}: type 2 without an xbc1 container')
+                d = xbc1(d)
+            if HCPS in d or XBC1 in d: mono_shaders(d, f'/{rel}{name}', out)
+            # GLSLC outputs: the Firehawk effect archives (.wipac, 'FirehawkAssetArchive') keep their effects' shaders as whole compiler outputs beside a few HCPS
+            if b'\x91\x68\x86\x19' in d: out.extend(glslc_shaders(d, f'/{rel}{name}', need=False))
+
 UE_LEGACY = 'UE legacy pak'
 def ue_legacy_jobs(files, parts=64):
     """Legacy Unreal paks (version 4, DRAGON QUEST XI S: pakchunk0-Switch.pak and pakchunk1-Switch.pak, 13.8 GB, and the update's *_0_P.pak): the engine mounts them all as one view, and a patch pak
@@ -1033,6 +1153,7 @@ def scan_blob(d, label, out):
         size = struct.unpack_from('<I', d, m.start() + 0x1c)[0]
         if m.start() + size <= len(d) and d[m.start() + 0x60:m.start() + 0x64] == b'grsc': out.extend(bnsh_shaders(d, m.start(), label))
     if MGFX in d: out.extend(mgfx_shaders(d, label))
+    if b'SLCT' in d: out.extend(slct_loose(d, label))   # Monolith SLCTs outside an HCPS (Xenoblade Chronicles 3's main)
 
 def group(label):
     """source group (second half of the package file name)"""
@@ -1112,6 +1233,9 @@ def scan_file(args):
         return rel, uniq_keys(found), var_pairs(found), trees
     if len(args) > 2 and head[:8] == ONEPACK:   # a range of Trinity packs (trpfs_jobs)
         trinity_shaders(path, rel, args[2], found)
+        return rel, uniq_keys(found), var_pairs(found), trees
+    if len(args) > 2 and args[2][0] == MONO_ARD:   # files of a Monolith archive (ard_jobs)
+        ard_shaders(path, rel, args[2][1], found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if len(args) > 2 and args[2][0] == UE_LEGACY:   # files of a legacy Unreal pak (ue_legacy_jobs)
         ue_legacy_shaders(path, rel, args[2][1], found)
@@ -1203,6 +1327,11 @@ def main():
         if not names and uepak.unreal_paks(romfs, legacy=False): red(f'the RomFS has Unreal paks, but there are no decoded shader code archives in {ued} (the NSP script writes them)')
         for nm in names: found += ue_shaders(open(os.path.join(ued, nm), 'rb').read(), f'/ue_shaders/{nm}')
         results.append(('main', {skey(c, k): (w, s, c, k) for w, s, c, k in found}, var_pairs(found), {}))
+    # DLC content (DM_SPLIT_AOC: a folder holding each DLC's RomFS as <index>/, the NSP script's aoc/) can bring shaders of its own: Xenoblade Chronicles 3's Future Redeemed keeps its models,
+    # maps and effects in an archive of its own (aoc/4/bf3_dlc04.ard). Scanned like a version's RomFS, under aoc/<index>/
+    aoc = os.environ.get('DM_SPLIT_AOC')
+    if aoc and os.path.isdir(aoc):
+        files += sorted((os.path.join(dp, f), 'aoc/' + os.path.relpath(os.path.join(dp, f), aoc).replace(os.sep, '/')) for dp, _, fs in os.walk(aoc) for f in fs)
     zdicts = {k: v for r in romfs_v for k, v in zs_dicts(r).items()}   # Tears of the Kingdom's zstd dictionaries (zs_dicts)
     keys = {}
     # First pass: every file; Unity bundles carry type trees, and the Shader trees are collected on the way. Second pass: Unity serialized files without type trees are scanned again with the borrowed trees
@@ -1214,8 +1343,9 @@ def main():
     bd_jobs, bdts = bdt_jobs(files)   # Dark Souls Remastered's dvdbnd archives: the entries of each .bdt by its .bhd5 index, in ranges
     arc_jobs, arcs = smash_arc_jobs(files)   # Super Smash Bros. Ultimate's data.arc: its current files, in ranges
     pz_jobs, pkzs = pkz_jobs(files)   # Bayonetta 3's PKZ archives, Oodle Kraken decoded by the game's own decoder in the Mac host
-    big += pak_jobs + tr_jobs + ue_jobs + bd_jobs + arc_jobs + pz_jobs
-    files = [(p, r) for p, r in files if not linkdata_jobs(p, r) and p not in paks and p not in trp and p not in uep and p not in bdts and p not in arcs and p not in pkzs]
+    ar_jobs, ards = ard_jobs(files)   # Xenoblade Chronicles 3's archive (bf3.arh / bf3.ard)
+    big += pak_jobs + tr_jobs + ue_jobs + bd_jobs + arc_jobs + pz_jobs + ar_jobs
+    files = [(p, r) for p, r in files if not linkdata_jobs(p, r) and p not in paks and p not in trp and p not in uep and p not in bdts and p not in arcs and p not in pkzs and p not in ards]
     with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=(common, {}, zdicts)) as ex:
         results += list(ex.map(scan_file, big)) + list(ex.map(scan_file, files, chunksize=16))
     trees, defer = {}, []
@@ -1259,10 +1389,10 @@ def main():
     for name, rr in recs.items():
         with open(os.path.join(pkg, name), 'wb') as f: f.write(b''.join(rr))
     with open(mapout, 'w') as f:
-        kinds = ' / '.join(k for k, hit in (('BNSH / BAHS', any('#BNSH@' in r[4] or '#BAHS@' in r[4] for r in rows)), ('Unity Shader', any('#var' in r[4] and '#BNSH@' not in r[4] and '#MSHD#' not in r[4] and '#SDF#' not in r[4] for r in rows)),
+        kinds = ' / '.join(k for k, hit in (('BNSH / BAHS', any('#BNSH@' in r[4] or '#BAHS@' in r[4] for r in rows)), ('Unity Shader', any('#var' in r[4] and '#BNSH@' not in r[4] and '#MSHD#' not in r[4] and '#SDF#' not in r[4] and '#HCPS@' not in r[4] and '#SLCT@' not in r[4] for r in rows)),
                                             ('MSHD', any('#MSHD#' in r[4] for r in rows)), ('GLSLC', any('#GLSLC@' in r[4] for r in rows)), ('RE Engine SDF', any('#SDF#' in r[4] for r in rows)),
                                             ('MT Framework SPK', any('#MTSPK@' in r[4] for r in rows)), ('MonoGame MGFX', any('#MGFX@' in r[4] for r in rows)),
-                                            ('PlatinumGames shader objects', any('#PGSO' in r[4] for r in rows)),
+                                            ('PlatinumGames shader objects', any('#PGSO' in r[4] for r in rows)), ('Monolith SLCT', any('#HCPS@' in r[4] or '#SLCT@' in r[4] for r in rows)),
                                             ('Unreal Engine shader code archives', any('#UE' in r[4] for r in rows))) if hit)
         f.write(f'# kind: evidence  {NOTE} ({kinds} in RomFS + main) → control section + code area keys (dm/gfx/tools/shader_split.py)\n')
         f.write('# column 5 records where each key first appears; this game has no PC version to pair with\n')
