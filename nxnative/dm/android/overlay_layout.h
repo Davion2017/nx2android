@@ -23,6 +23,30 @@ int64_t dm_overlay_pressed(int ctl, uint64_t bit);   // CLOCK_MONOTONIC ns of th
 #define OV_MIN_MM 10.0f
 float dm_overlay_scale(void);
 static inline float ov_r(const ov_ctl *c) { return c->r * dm_overlay_scale(); }
+#define OV_REACH_MIN 0.045f   // a small button (-, +, the menu button: half the face buttons' size, as on a Joy-Con) still takes touches this far from its centre
+// L, R, ZL and ZR are drawn as the Switch's shoulder buttons, not discs: a box whose top outer corner is a quarter ellipse (L, R: a wide, low bumper whose
+// top sweeps down to the outer side, as a Joy-Con's; ZL, ZR: a taller trigger with its lower inner corner round too). ov_shoulder: -1 a left one, 1 a right
+// one, 0 not a shoulder button
+#define OV_SHOULDER_EXT 1.6f   // the widest shape's half width, in the control's radii
+static inline int ov_shoulder(const ov_ctl *c) {
+    if (c->kind != OV_BUTTON) return 0;
+    return c->btn == DM_BTN_L || c->btn == DM_BTN_ZL ? -1 : c->btn == DM_BTN_R || c->btn == DM_BTN_ZR ? 1 : 0;
+}
+// the signed distance from (dx, dy), an offset from the control's centre in its radii, to its edge (negative inside), in its radii
+static inline float ov_sdf(const ov_ctl *c, float dx, float dy) {
+    int side = ov_shoulder(c); if (!side) return sqrtf(dx * dx + dy * dy) - 1;
+    int trig = c->btn == DM_BTN_ZL || c->btn == DM_BTN_ZR;
+    float hx = trig ? 1.45f : OV_SHOULDER_EXT, hy = trig ? 0.95f : 0.72f, x = side < 0 ? dx : -dx;   // x < 0: the outer side
+    float ex = trig ? 1.1f : 1.35f, ey = trig ? 1.1f : 1.0f, ox = ex - hx, oy = ey - hy;   // the top outer corner's ellipse: its radii and centre
+    if (x < ox && dy < oy) {   // its distance, to first order (exact enough for a ring a few pixels wide)
+        float u = (x - ox) / ex, v = (dy - oy) / ey, l = sqrtf(u * u + v * v);
+        if (l < 1e-6f) return -fminf(ex, ey);
+        return (l - 1) * l / sqrtf(u * u / (ex * ex) + v * v / (ey * ey));
+    }
+    float rad = dy >= 0 && x >= 0 && trig ? 0.60f : 0.22f;   // the other corners
+    float qx = fabsf(x) - hx + rad, qy = fabsf(dy) - hy + rad, px = qx > 0 ? qx : 0, py = qy > 0 ? qy : 0;
+    return sqrtf(px * px + py * py) + fminf(fmaxf(qx, qy), 0) - rad;
+}
 // a d-pad direction's circle: centre offset and radius, in stick radii (k: 0 right, 1 left, 2 down, 3 up)
 static inline void ov_dpad_dir(int k, float *ox, float *oy, float *r) { float s = 0.42f; *ox = k == 0 ? s * 1.2f : k == 1 ? -s * 1.2f : 0; *oy = k == 2 ? s * 1.2f : k == 3 ? -s * 1.2f : 0; *r = s * 0.75f; }
 static const uint64_t OV_DPAD_BITS[4] = {DM_BTN_RIGHT, DM_BTN_LEFT, DM_BTN_DOWN, DM_BTN_UP};

@@ -79,7 +79,8 @@ static uint32_t ov_layout_sprites(uint32_t h) {   // places the sprites, returns
     for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_BUTTON && ov_r(&OV_CTLS[i]) * h > disc) disc = ov_r(&OV_CTLS[i]) * h;
     for (int i = 0; i < SP_N; i++) {
         const ov_ctl *c = i < OV_N ? &OV_CTLS[i] : NULL;
-        float r = !c ? (i == SP_DISC ? disc : 6) : c->kind == OV_STICK_L || c->kind == OV_STICK_R ? ov_r(c) * OV_KNOB * h : c->kind == OV_MENU ? ov_r(c) * h : 0;
+        float r = !c ? (i == SP_DISC ? disc : 6) : c->kind == OV_STICK_L || c->kind == OV_STICK_R ? ov_r(c) * OV_KNOB * h : c->kind == OV_MENU ? ov_r(c) * h
+                : ov_shoulder(c) ? ov_r(c) * OV_SHOULDER_EXT * h : 0;   // a shoulder button's glow is its own shape
         g_ov.sp[i][2] = r; if (!r) continue; g_ov.sp[i][0] = x + r + 2; x += 2 * r + 8; if (r > mr) mr = r;
     }
     for (int i = 0; i < SP_N; i++) g_ov.sp[i][1] = top + mr + 4;
@@ -95,6 +96,14 @@ static void ov_circle(uint8_t *px, uint32_t w, uint32_t h, float cx, float cy, f
         float d = sqrtf((x - cx) * (x - cx) + (y - cy) * (y - cy));
         if (d <= r && d >= r - ring) ov_plot(px, w, h, x, y, 150, 255);   // the ring
         else if (d < r - ring) ov_plot(px, w, h, x, y, 50, 30);           // a dark, see-through inside
+    }
+}
+static void ov_shoulder_ring(uint8_t *px, uint32_t w, uint32_t h, const ov_ctl *c, float cx, float cy, float r, float ring) {   // ov_circle for L, R, ZL, ZR
+    float ex = OV_SHOULDER_EXT * r + 2;
+    for (int y = (int)(cy - r - 2); y <= (int)(cy + r + 2); y++) for (int x = (int)(cx - ex); x <= (int)(cx + ex); x++) {
+        float d = ov_sdf(c, (x - cx) / r, (y - cy) / r) * r;
+        if (d <= 0 && d >= -ring) ov_plot(px, w, h, x, y, 150, 255);
+        else if (d < -ring) ov_plot(px, w, h, x, y, 50, 30);
     }
 }
 static void ov_text(uint8_t *px, uint32_t w, uint32_t h, float cx, float cy, const char *s, int scale) {
@@ -124,6 +133,11 @@ static void cv_rrect(const ov_canvas *cv, float x0, float y0, float x1, float y1
     }
 }
 static void cv_disc(const ov_canvas *cv, float cx, float cy, float r, const uint8_t c[4]) { cv_rrect(cv, cx - r, cy - r, cx + r, cy + r, r, c); }
+static void cv_shoulder(const ov_canvas *cv, const ov_ctl *c, float cx, float cy, float r, float inset, const uint8_t col[4]) {   // a filled shoulder shape, inset texels in
+    float ex = OV_SHOULDER_EXT * r + 1;
+    for (int y = (int)(cy - r) - 1; y <= (int)(cy + r) + 1; y++) for (int x = (int)(cx - ex); x <= (int)(cx + ex); x++)
+        cv_blend(cv, x, y, col, 0.5f - (ov_sdf(c, (x + 0.5f - cx) / r, (y + 0.5f - cy) / r) * r + inset));
+}
 static void cv_ring(const ov_canvas *cv, float cx, float cy, float r, float t, const uint8_t c[4]) {
     for (int y = (int)(cy - r) - 1; y <= (int)(cy + r) + 1; y++) for (int x = (int)(cx - r) - 1; x <= (int)(cx + r) + 1; x++) {
         float d = sqrtf((x + 0.5f - cx) * (x + 0.5f - cx) + (y + 0.5f - cy) * (y + 0.5f - cy));
@@ -215,8 +229,10 @@ static void ov_raster(uint8_t *px, uint32_t w, uint32_t h, uint32_t sh) {
             for (int k = 0; k < 4; k++) { float ox, oy, dr; ov_dpad_dir(k, &ox, &oy, &dr); ov_circle(px, w, h, cx + ox * r, cy + oy * r, dr * r, 2.5f); }
             continue;
         }
-        ov_circle(px, w, h, cx, cy, r, c->kind == OV_BUTTON ? 2.5f : 3.0f);
-        if (c->label[0]) ov_text(px, w, h, cx, cy, c->label, ts);
+        if (ov_shoulder(c)) ov_shoulder_ring(px, w, h, c, cx, cy, r, 2.5f);
+        else ov_circle(px, w, h, cx, cy, r, c->kind == OV_BUTTON ? 2.5f : 3.0f);
+        int ls = ts; while (ls > 1 && 7 * ls > r) ls--;   // smaller on a small button (-, +)
+        if (c->label[0]) ov_text(px, w, h, cx, cy, c->label, ls);
     }
     ov_canvas strip = {px, w, 0, 0, w, h + sh};
     for (int i = 0; i < SP_N; i++) {   // the sprites (the knobs are drawn only as sprites, where the finger has them)
@@ -224,6 +240,7 @@ static void ov_raster(uint8_t *px, uint32_t w, uint32_t h, uint32_t sh) {
         if (i == SP_DISC) cv_disc(&strip, x, y, r, C_WHITE);
         else if (i == SP_BLACK) { static const uint8_t k[4] = {0, 0, 0, 255}; cv_rrect(&strip, x - r, y - r, x + r, y + r, 0, k); }
         else if (OV_CTLS[i].kind == OV_MENU) ov_menu_icon(&strip, x, y, r);
+        else if (ov_shoulder(&OV_CTLS[i])) cv_shoulder(&strip, &OV_CTLS[i], x, y, r / OV_SHOULDER_EXT, r / OV_SHOULDER_EXT * 0.07f, C_WHITE);   // inset as the disc's 0.93
         else ov_circle(px, w, h + sh, x, y, r, 2.5f);
     }
 }
@@ -255,7 +272,8 @@ static void ov_render(VkCommandBuffer cb, int mode, int menu) {
             if (c->kind == OV_STICK_L || c->kind == OV_STICK_R) {
                 float dx, dy; dm_overlay_knob(c->kind == OV_STICK_R, &dx, &dy); float travel = cr * (1 - OV_KNOB);   // the knob's edge reaches the ring
                 ov_sprite(cb, i, c->x * W + dx * travel, c->y * H + dy * travel, cr * OV_KNOB, 1);
-            } else if (c->kind == OV_BUTTON) { float g = ov_glow(dm_overlay_pressed(i, 0), now); if (g > 0) ov_sprite(cb, SP_DISC, c->x * W, c->y * H, cr * 0.93f, g); }
+            } else if (c->kind == OV_BUTTON) { float g = ov_glow(dm_overlay_pressed(i, 0), now); if (g <= 0) continue;
+                if (ov_shoulder(c)) ov_sprite(cb, i, c->x * W, c->y * H, cr * OV_SHOULDER_EXT, g); else ov_sprite(cb, SP_DISC, c->x * W, c->y * H, cr * 0.93f, g); }
             else if (c->kind == OV_DPAD) for (int k = 0; k < 4; k++) {
                 float g = ov_glow(dm_overlay_pressed(i, OV_DPAD_BITS[k]), now), ox, oy, dr; if (g <= 0) continue;
                 ov_dpad_dir(k, &ox, &oy, &dr); ov_sprite(cb, SP_DISC, c->x * W + ox * cr, c->y * H + oy * cr, dr * cr * 0.93f, g);

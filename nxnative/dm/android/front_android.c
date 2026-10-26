@@ -125,8 +125,8 @@ static int ctl_at(float x, float y, float W, float H) {   // the control under (
     int best = -1, shown = dm_overlay_visible() == 1; float bd = 1e9f;
     for (int i = 0; i < OV_N; i++) {
         const ov_ctl *c = &OV_CTLS[i]; if (!shown && c->kind != OV_MENU) continue;   // hidden: only the menu button answers
-        float dx = (x - c->x * W) / H, dy = (y - c->y * H) / H, d = sqrtf(dx * dx + dy * dy);
-        float reach = c->kind == OV_BUTTON || c->kind == OV_MENU ? ov_r(c) * 1.25f : ov_r(c) * 1.5f;
+        float r = ov_r(c), dx = (x - c->x * W) / H, dy = (y - c->y * H) / H, d = r * (1 + ov_sdf(c, dx / r, dy / r));   // a disc's: the distance from its centre
+        float reach = c->kind == OV_BUTTON || c->kind == OV_MENU ? fmaxf(r * 1.25f, OV_REACH_MIN * dm_overlay_scale()) : r * 1.5f;
         if (d < reach && d / reach < bd) { bd = d / reach; best = i; }
     }
     return best;
