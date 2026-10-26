@@ -1,0 +1,11 @@
+# Graveyard Keeper 2 on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Unity 6000.3.9f1 IL2CPP with FMOD on SDK 21.4.4, update 1.0.4 (shown in game as 1.007.4), 13,986 shaders from its Addressables bundles, all translated.
+# On the Y700 (2026-10-26), driven with DM_CTL: boot, the title, a new game and the opening in the Inquisition Dungeon (freeing the hero, the first item).
+# 30 fps held as on the Switch (the game asks for present interval 2; frame p50 33.3 ms, p95 35 ms, no dropped frames) over a 15-minute soak, with replay about
+# 3-6 ms and GPU about 7-11 ms a frame, footprint steady at 1.8 GB, no audio underruns, no red log line. Screen recordings found no flickering frame, standing or walking.
+# A 10-minute play session by hand on the same build: nothing wrong seen or heard, no dropped frame, no audio underrun. Not checked yet: saving and loading a game
+# (the opening reaches no save point), the areas past the dungeon, and handheld mode (played docked).
+status	playable
+tested	v262144 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.graveyardkeeper2
+orientation	landscape
