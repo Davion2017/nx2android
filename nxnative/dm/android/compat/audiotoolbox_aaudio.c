@@ -80,7 +80,10 @@ OSStatus AudioOutputUnitStart(AudioUnit u) {
     AAudioStreamBuilder_setSharingMode(b, AAUDIO_SHARING_MODE_SHARED);
     AAudioStreamBuilder_setUsage(b, AAUDIO_USAGE_GAME);
     AAudioStreamBuilder_setContentType(b, AAUDIO_CONTENT_TYPE_MUSIC);
-    if (u->frames_hint > 0) AAudioStreamBuilder_setFramesPerDataCallback(b, u->frames_hint);
+    // 5 ms callbacks unless the host asks otherwise, as the iOS front end sets its I/O buffer (docs/agents/03-bringup.md "Crackling on iOS only"): left to itself AAudio
+    // on the Legion Y700 called back with 6-960 frames, more than Tales of Eternia Remastered's CRI output keeps queued (about 2 blocks), so 2600 of 2000 callbacks
+    // underran and 11% of the sound was zero padding; with 240 frames, 0 underruns
+    AAudioStreamBuilder_setFramesPerDataCallback(b, u->frames_hint > 0 ? u->frames_hint : (int32_t)(u->fmt.mSampleRate / 200));
     AAudioStreamBuilder_setDataCallback(b, on_data, u);
     AAudioStreamBuilder_setErrorCallback(b, on_error, u);
     r = AAudioStreamBuilder_openStream(b, &u->st);
