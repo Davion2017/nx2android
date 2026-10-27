@@ -43,7 +43,11 @@ def version_code(ver):   # the APK's versionCode: the Switch version number (v19
 
 def inspect(folder):
     """What a game folder holds, without extracting anything: the GUI's game card and `porter inspect`"""
-    app, fam = nsp.scan_nsps(Path(folder))
+    try: app, fam = nsp.scan_nsps(Path(folder))
+    except BuildError:
+        if any(Path(folder).glob('*.ns[zZ]')) or any(Path(folder).glob('*.xc[zZ]')):   # how dumps are often shared: zstd-compressed NCAs the extractor does not read
+            raise BuildError('this folder has only NSZ / XCZ files: decompress them to NSP / XCI first (nsz -D with your prod.keys), then choose the folder with the NSP files') from None
+        raise
     g, ap = profiles.by_title(app)
     info = dict(title_id=f'{app:016X}', base=fam['base'].name, updates=[{'version': f'v{v}' if v is not None else None, 'file': p.name} for v, p in fam['updates']],
                 dlc=[{'title_id': f'{t:016X}', 'file': p.name} for t, _, p in fam['dlc']], profile=None, android=None, versions=[], pack=None, supported=False, reason='')

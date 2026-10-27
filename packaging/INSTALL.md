@@ -1,18 +1,33 @@
 # Installing nx2android
 
-nx2android ports your own Nintendo Switch games to Android. This folder is the whole app: nothing to install with pip. It needs four things from you, once.
+nx2android ports your own Nintendo Switch games to Android. This folder is the whole app: there is nothing to install with pip, and you need no programming. You need:
 
-1. **Android NDK r27c**: download it from [developer.android.com/ndk/downloads](https://developer.android.com/ndk/downloads) and unzip it anywhere (only the NDK: no Android Studio, SDK or JDK).
-2. **.NET SDK 10**: install it from [dotnet.microsoft.com/download](https://dotnet.microsoft.com/download).
-3. **Android platform-tools** (adb), to install on your device from the app: [developer.android.com/tools/releases/platform-tools](https://developer.android.com/tools/releases/platform-tools). Turn on USB debugging (or wireless debugging) on the device.
-4. **Your own `prod.keys`**, dumped from your Switch. Keys and game files never leave your PC except into the app you build.
+- a Windows PC with about 30 GB free (the tools take 4 GB, a port about twice the game's size);
+- an Android device whose GPU is an **Adreno** (Snapdragon) or **Xclipse** (Exynos 2200 and later). Mali and PowerVR GPUs cannot run these games;
+- the game's files dumped from your own Switch (the base game NSP or XCI, its update and DLC, in one folder) and your **`prod.keys`** from the same Switch. The tool reads NSP and XCI files; an NSZ must be decompressed to an NSP first.
 
-Then start **nx2android.exe**:
+## 1. Start the app
 
-- **Setup** tab: every line should be green. Point it at the NDK folder, `dotnet.exe`, `adb.exe` or `prod.keys` if it did not find them.
-- **Port** tab: choose the game's folder (the base game NSP or XCI, its update and DLC), click **Port**, then **Install** with the device connected.
-- **Games** tab: the games with a profile and their status.
+Unzip `nx2android-<version>.zip` anywhere (a short path such as `C:\nx2android` is best) and start **nx2android.exe**. Windows may warn about an unknown app: choose *More info* → *Run anyway*.
 
-The first port of a game takes a while (extraction, rewriting the game's code, translating its shaders; the shader translator is built once, the first time). Later ports reuse what has not changed. The APK and the game's data appear in the game's folder.
+## 2. Setup tab (once)
 
-The device's GPU must read BC-compressed textures (Adreno, Xclipse; not Mali or PowerVR). The command line is the same program: `nx2android.exe -m porter -h`.
+1. Click **Download missing tools**. The app downloads the Android NDK, the .NET SDK and Android platform-tools from Google and Microsoft (about 1 GB) into your nx2android folder. They come under their makers' licenses, which the dialog links to. If you already have them installed, set their paths instead.
+2. Set **prod.keys** to your keys file and click **Save and check**.
+3. Every line should now have a green ✓.
+
+## 3. Port tab
+
+1. Choose the game's folder. The card under it says which game it found and whether it can be ported: the **Games** tab lists the supported ones.
+2. Click **Port**. The first port of a game takes a while (from 15 minutes to over an hour: extraction, rewriting the game's code, translating its shaders). Later ports reuse what has not changed.
+3. The APK and the game's data folder (`<Game>-data`) appear in the game's folder. **Open output folder** shows them.
+
+## 4. Put it on the device
+
+With **USB debugging** on (Settings → About → tap *Build number* seven times, then Settings → Developer options → USB debugging) and the device plugged in, tick **Install on the device when done** before porting, or click **Install on device** afterwards. Allow the PC when the device asks.
+
+## When something goes wrong
+
+The log at the bottom of the Port tab says why; lines in red are errors. Ask on the project's GitHub page (Issues), with the game's title ID, your device and the red lines. Never post your keys or game files.
+
+The command line is the same program: `nx2android.exe -m porter -h`.

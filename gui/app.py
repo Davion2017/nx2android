@@ -1,6 +1,7 @@
 # The nx2android desktop app: three tabs over porter.
 #   Port   pick the game folder (porter inspect), options, Port (porter port --progress json): the stage list, the current stage's bar, the log; then open or install the result
-#   Setup  the tools a port needs (porter doctor) and the saved settings (porter.config): prod.keys, the NDK, dotnet, adb, the output folder, the device
+#   Setup  the tools a port needs (porter doctor), downloading the missing ones (porter tools --download), and the saved settings (porter.config): prod.keys, the NDK,
+#          dotnet, adb, the output folder, the device
 #   Games  the game profiles (porter profiles --all)
 import os, subprocess, sys, time
 from pathlib import Path
@@ -109,8 +110,9 @@ class PortTab(QWidget):
         call_json(self, ['inspect', d, '--json'], self.on_inspect)
 
     def on_inspect(self, info, code):
-        self.info = info
-        if not info: self.card.setText('<span style="color:#c62828">No game found in this folder (an NSP or XCI with a title ID).</span>'); return
+        err = info
+        self.info = info = None if info and info.get('error') else info
+        if not info: self.card.setText('<span style="color:#c62828">' + ((err or {}).get('error') or 'No game found in this folder (an NSP or XCI with a title ID).') + '</span>'); return
         a = info.get('android') or {}
         st = a.get('status', 'ios only' if info.get('profile') else 'not supported')
         col = STATUS_COLOUR.get(st, '#c62828')
@@ -241,9 +243,14 @@ class SetupTab(QWidget):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers); self.table.setSelectionMode(QTableWidget.NoSelection)
         hh = self.table.horizontalHeader(); hh.setSectionResizeMode(0, QHeaderView.ResizeToContents); hh.setSectionResizeMode(1, QHeaderView.ResizeToContents); hh.setSectionResizeMode(2, QHeaderView.Stretch)
         gl.addWidget(self.table)
-        note = QLabel('The tool does not ship toolchains. Install <b>Android NDK r27c</b> (developer.android.com/ndk/downloads), the <b>.NET SDK 10</b> (dotnet.microsoft.com) '
-                      'and, to install from here, Android <b>platform-tools</b>. Keys and game files never leave your computer except to your own device.')
+        note = QLabel('A port needs the <b>Android NDK r27c</b>, the <b>.NET SDK 10</b> and, to install from here, Android <b>platform-tools</b>. '
+                      '<b>Download missing tools</b> fetches them from Google and Microsoft (about 1 GB) into your nx2android folder; or install them yourself and set their paths below. '
+                      'Your <b>prod.keys</b> must come from your own Switch. Keys and game files never leave your computer except to your own device.')
         note.setWordWrap(True); note.setTextFormat(Qt.RichText); gl.addWidget(note)
+        dl = QHBoxLayout(); self.dl_btn = QPushButton('Download missing tools'); self.dl_btn.clicked.connect(self.download)
+        self.dl_step = QLabel(''); self.dl_prog = QProgressBar(); self.dl_prog.setRange(0, 1000); self.dl_prog.setVisible(False)
+        dl.addWidget(self.dl_btn); dl.addWidget(self.dl_step, 1); dl.addWidget(self.dl_prog, 1); gl.addLayout(dl)
+        self.fetch = Porter(self); self.fetch.event.connect(self.on_fetch); self.fetch.finished.connect(self.fetched)
         v.addWidget(g)
         s = QGroupBox('Settings'); f = QFormLayout(s); self.edits = {}
         for key, label, kind in self.FIELDS:
@@ -253,6 +260,39 @@ class SetupTab(QWidget):
         row = QHBoxLayout(); save = QPushButton('Save and check'); save.clicked.connect(self.save); row.addStretch(1); row.addWidget(save)
         f.addRow('', row)
         v.addWidget(s); v.addStretch(1)
+        self.load()
+
+    # ---- downloading the missing tools ----
+    def download(self):
+        self.dl_btn.setEnabled(False); self.dl_step.setText('reading the download lists…')
+        call_json(self, ['tools', '--json'], self.confirm_download)
+
+    def confirm_download(self, items, code):
+        self.dl_btn.setEnabled(True); self.dl_step.setText('')
+        if items is None: QMessageBox.warning(self, 'Download', 'Could not read the download lists from Google and Microsoft. Check the internet connection and try again.'); return
+        if not items: QMessageBox.information(self, 'Download', 'Nothing to download: every tool is there.'); return
+        rows = ''.join(f'<li><b>{it["name"]}</b> {it["version"]}, {size(it["size"])}, from {it["url"].split("/")[2]} (<a href="{it["license"]}">license</a>)</li>' for it in items)
+        box = QMessageBox(QMessageBox.Question, 'Download missing tools', f'<p>Download and unpack into your nx2android folder:</p><ul>{rows}</ul>'
+                          '<p>They come from their makers under their own licenses: downloading them means you accept those.</p>', QMessageBox.Yes | QMessageBox.No, self)
+        box.setTextFormat(Qt.RichText)
+        if box.exec() != QMessageBox.Yes: return
+        self.dl_btn.setEnabled(False); self.dl_prog.setVisible(True); self.dl_prog.setRange(0, 0); self.dl_errors = []
+        self.fetch.start(['tools', '--download', '--progress', 'json'])
+
+    def on_fetch(self, ev):
+        e = ev.get('ev')
+        if e == 'stage': self.dl_step.setText(f'[{ev["k"]}/{ev["n"]}] {ev["name"]}'); self.dl_prog.setRange(0, 0)
+        elif e == 'progress':
+            done, total = ev.get('done'), ev.get('total')
+            self.dl_step.setText(f'{ev["name"]} · {ev.get("step") or ""}' + (f' · {size(done)} / {size(total)}' if ev.get('unit') == 'B' and total and done is not None else ''))
+            if ev.get('frac') is not None: self.dl_prog.setRange(0, 1000); self.dl_prog.setValue(int(ev['frac'] * 1000))
+            else: self.dl_prog.setRange(0, 0)
+        elif e == 'say' and ev.get('msg', '').startswith('[RED] '): self.dl_errors.append(ev['msg'].removeprefix('[RED] '))
+
+    def fetched(self, code):
+        self.dl_btn.setEnabled(True); self.dl_prog.setVisible(False)
+        self.dl_step.setText('the tools are ready' if code == 0 else 'the download failed')
+        if code: QMessageBox.warning(self, 'Download', '\n'.join(self.dl_errors) or 'The download failed.')
         self.load()
 
     def pick(self, key, kind):

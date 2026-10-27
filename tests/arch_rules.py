@@ -99,7 +99,7 @@ check("gui/runner.py drives 'python -m porter'", "'-m', 'porter'" in runner or '
 cli = (R / 'porter/cli.py').read_text(encoding='utf-8')
 subs = set(re.findall(r"add_parser\('([a-z]+)'", cli))
 gui_calls = set()
-for f in guif: gui_calls |= set(re.findall(r"\[\s*'(doctor|profiles|inspect|port|install|devices|config)'", (R / f).read_text(encoding='utf-8')))
+for f in guif: gui_calls |= set(re.findall(r"\[\s*'(doctor|profiles|inspect|port|install|devices|tools|config)'", (R / f).read_text(encoding='utf-8')))
 gui_calls |= set(re.findall(r"call_json\(\s*\[?\s*'([a-z]+)'", ''.join((R / f).read_text(encoding='utf-8') for f in guif)))
 check('every GUI action is a CLI subcommand', gui_calls <= subs, f'GUI uses {sorted(gui_calls)}; CLI has {sorted(subs)}')
 

@@ -1,11 +1,12 @@
 # The tools a port needs on the player's machine, found and checked (`porter doctor`, the GUI's setup screen). Nothing here is shipped with the tool:
-# the player installs the Android NDK (r27c), the .NET SDK (10) and, to install from the tool, platform-tools (adb).
+# the player installs the Android NDK (r27c), the .NET SDK (10) and, to install from the tool, platform-tools (adb), or has `porter tools --download` (porter.fetch)
+# fetch them from Google and Microsoft into their nx2android folder (paths.player_tools()), which the finders here also search.
 import glob, importlib.util, os, re, shutil, subprocess, sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from porter import config
-from porter.paths import LOCAL_TOOLS
+from porter.paths import LOCAL_TOOLS, player_tools
 
 NDK_REVISION = '27.2.12479018'   # r27c: the NDK the Android host is built and tested with
 NDK_RELEASE = 'r27c'
@@ -52,7 +53,7 @@ def find_ndk(cfg=None):
     given = [cfg.get('ndk'), os.environ.get('ANDROID_NDK_HOME'), os.environ.get('ANDROID_NDK_ROOT')]
     for d in filter(None, given):   # an explicit choice is taken as it is, even when it is not r27c (the check says so)
         if ndk_revision(d): return Path(d), ndk_revision(d)
-    found = [Path(p) for p in glob.glob(str(LOCAL_TOOLS / 'android-ndk-*'))] + [p for r in _sdk_roots() for p in sorted((r / 'ndk').glob('*'))] + [r / 'ndk-bundle' for r in _sdk_roots()]
+    found = [Path(p) for t in (LOCAL_TOOLS, player_tools()) for p in glob.glob(str(t / 'android-ndk-*'))] + [p for r in _sdk_roots() for p in sorted((r / 'ndk').glob('*'))] + [r / 'ndk-bundle' for r in _sdk_roots()]
     found = [(d, ndk_revision(d)) for d in found if ndk_revision(d)]
     if not found: return None, None
     return next((x for x in found if x[1] == NDK_REVISION), found[-1])
@@ -64,7 +65,7 @@ def find_dotnet(cfg=None):
     cfg = cfg if cfg is not None else config.load()
     if cfg.get('dotnet') and Path(cfg['dotnet']).is_file(): return Path(cfg['dotnet'])
     progs = [os.environ.get(k) for k in ('ProgramFiles', 'ProgramW6432')] if os.name == 'nt' else []
-    cands = [os.environ.get('DOTNET_ROOT') and str(Path(os.environ['DOTNET_ROOT']) / f'dotnet{EXE}'), shutil.which('dotnet'), str(LOCAL_TOOLS / 'dotnet' / f'dotnet{EXE}'),
+    cands = [os.environ.get('DOTNET_ROOT') and str(Path(os.environ['DOTNET_ROOT']) / f'dotnet{EXE}'), shutil.which('dotnet'), str(LOCAL_TOOLS / 'dotnet' / f'dotnet{EXE}'), str(player_tools() / 'dotnet' / f'dotnet{EXE}'),
              str(Path.home() / '.dotnet' / f'dotnet{EXE}'), *[str(Path(p) / 'dotnet' / f'dotnet{EXE}') for p in progs if p], '/usr/local/share/dotnet/dotnet']
     found = list(dict.fromkeys(Path(c) for c in cands if c and Path(c).is_file()))
     return next((d for d in found if any(int(s.split('.')[0]) >= DOTNET_MAJOR for s in dotnet_sdks(d))), found[0] if found else None)
@@ -78,7 +79,7 @@ def dotnet_sdks(dotnet):   # ['10.0.402', ...]
 
 def find_adb(cfg=None):
     cfg = cfg if cfg is not None else config.load()
-    for c in [cfg.get('adb'), shutil.which('adb'), *[str(r / 'platform-tools' / f'adb{EXE}') for r in _sdk_roots()], str(LOCAL_TOOLS / 'platform-tools' / f'adb{EXE}')]:
+    for c in [cfg.get('adb'), shutil.which('adb'), *[str(r / 'platform-tools' / f'adb{EXE}') for r in _sdk_roots()], str(LOCAL_TOOLS / 'platform-tools' / f'adb{EXE}'), str(player_tools() / 'platform-tools' / f'adb{EXE}')]:
         if c and Path(c).is_file(): return Path(c)
     return None
 
@@ -99,16 +100,16 @@ def checks(cfg=None, keys=None):
     out.append(Check('Python modules', not miss, 'missing: ' + ', '.join(miss) if miss else 'lz4, capstone, zstd', fix='pip install ' + ' '.join(miss) if miss else ''))
     out.append(Check('Pillow', _importable('PIL'), 'the app icon from the game\'s icon' if _importable('PIL') else 'missing: the app gets no icon', required=False, fix='pip install pillow'))
     ndk, rev = find_ndk(cfg)
-    if not ndk: out.append(Check('Android NDK', False, 'not found', fix=f'install NDK {NDK_RELEASE} (developer.android.com/ndk/downloads) and set its folder'))
+    if not ndk: out.append(Check('Android NDK', False, 'not found', fix=f'Download missing tools, or install NDK {NDK_RELEASE} (developer.android.com/ndk/downloads) and set its folder'))
     else: out.append(Check('Android NDK', rev == NDK_REVISION, f'{rev} at {ndk}' + ('' if rev == NDK_REVISION else f': the host is built with {NDK_RELEASE} ({NDK_REVISION}); others are untested'),
                            required=rev.split('.')[0] == NDK_REVISION.split('.')[0], path=str(ndk), fix='' if rev == NDK_REVISION else f'install NDK {NDK_RELEASE}'))
     dn = find_dotnet(cfg)
     sdks = dotnet_sdks(dn) if dn else []
     good = [s for s in sdks if int(s.split('.')[0]) >= DOTNET_MAJOR]
-    out.append(Check('.NET SDK', bool(good), (f'{", ".join(sdks) or "no SDK"} ({dn})' if dn else 'dotnet not found'), path=str(dn or ''), fix='' if good else f'install the .NET SDK {DOTNET_MAJOR} (dotnet.microsoft.com)'))
+    out.append(Check('.NET SDK', bool(good), (f'{", ".join(sdks) or "no SDK"} ({dn})' if dn else 'dotnet not found'), path=str(dn or ''), fix='' if good else f'Download missing tools, or install the .NET SDK {DOTNET_MAJOR} (dotnet.microsoft.com)'))
     adb = find_adb(cfg)
     out.append(Check('adb', bool(adb), str(adb) if adb else 'not found: the tool cannot install on a device (the APK and data pack are still made)', required=False, path=str(adb or ''),
-                     fix='' if adb else 'install Android platform-tools'))
+                     fix='' if adb else 'Download missing tools, or install Android platform-tools'))
     k = keys or cfg.get('keys')
     out.append(Check('prod.keys', bool(k) and Path(k).is_file(), k if k and Path(k).is_file() else (f'no such file: {k}' if k else 'not set'), path=k or '',
                      fix='' if k and Path(k).is_file() else 'dump prod.keys from your own Switch and set its path'))

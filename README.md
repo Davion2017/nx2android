@@ -16,9 +16,18 @@ This is the Android port of [nxnative](https://github.com/seedds/nxnative), whic
 
 Each game is a profile in `nxnative/dm/games/<title ID>/` with an `android.tsv`. The device's GPU must read BC-compressed textures (Adreno, Xclipse; not Mali or PowerVR).
 
-## Setup
+## For players: port a game without programming
 
-The app comes as a bundle: unzip `nx2android-<version>.zip` and start `nx2android.exe` ([packaging/INSTALL.md](packaging/INSTALL.md)). From the repository instead, install [Python](https://www.python.org) 3.11 or later and `python -m pip install -r requirements.txt`. Either way, install once:
+1. Download `nx2android-<version>-windows-x64.zip` from [Releases](https://github.com/shirai91/nx2android/releases/latest), unzip it and start **nx2android.exe**.
+2. **Setup** tab: click **Download missing tools** (the Android NDK, the .NET SDK and platform-tools, about 1 GB, from Google and Microsoft), then set your **prod.keys**. Every line turns green.
+3. **Port** tab: choose the folder with the game's NSP or XCI files (base game, update, DLC) and click **Port**.
+4. Tick **Install on the device when done** with the device plugged in and USB debugging on, or copy the APK and the data folder yourself.
+
+The step-by-step guide is [packaging/INSTALL.md](packaging/INSTALL.md). Which games each release has been checked to port: [docs/PORT_STATUS.md](docs/PORT_STATUS.md). You need your own game files and `prod.keys`, dumped from your own Switch; the tool never ships or downloads either. NSZ files must be decompressed to NSP first.
+
+## Setup from the repository
+
+Install [Python](https://www.python.org) 3.11 or later and `python -m pip install -r requirements.txt`, then `python -m porter tools --download` (or install them yourself):
 - [Android NDK r27c](https://developer.android.com/ndk/downloads) (only the NDK: no Android Studio, SDK or JDK)
 - [.NET SDK 10](https://dotnet.microsoft.com/download)
 - Android [platform-tools](https://developer.android.com/tools/releases/platform-tools) (adb), to install from the tool

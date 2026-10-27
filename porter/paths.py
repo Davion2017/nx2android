@@ -19,5 +19,9 @@ def user_dir():
     return d
 
 
+def player_tools():   # the toolchains `porter tools --download` fetched for the player: android-ndk-r27c/, dotnet/, platform-tools/
+    return user_dir() / 'toolchains'
+
+
 def signing_key():   # one key per player: every app they port keeps its signer, so a new port installs over the last one
     return user_dir() / 'signing-key.json'

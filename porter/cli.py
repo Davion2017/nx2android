@@ -27,6 +27,10 @@ def _parser():
     ins = sub.add_parser('install', help='install a port made earlier'); ins.add_argument('data', help='the data pack folder (<App>-data)'); ins.add_argument('--apk', help='the APK (default: <App>.apk beside the pack)')
     ins.add_argument('--device', default=''); ins.add_argument('--replace-signer', action='store_true'); ins.add_argument('--progress', default='auto', choices=('auto', 'bar', 'lines', 'json', 'off'))
     dv = sub.add_parser('devices', help='the devices adb sees'); dv.add_argument('--json', action='store_true')
+    t = sub.add_parser('tools', help='list, or download, the missing tools (Android NDK, .NET SDK, platform-tools) from Google and Microsoft')
+    t.add_argument('--download', action='store_true', help='download and unpack them into the nx2android folder (you accept their licenses)')
+    t.add_argument('--only', default='', help='these instead of the missing ones: ndk, dotnet, adb (comma-separated)'); t.add_argument('--json', action='store_true')
+    t.add_argument('--progress', default='auto', choices=('auto', 'bar', 'lines', 'json', 'off'))
     c = sub.add_parser('config', help='show or change the saved settings'); c.add_argument('key', nargs='?'); c.add_argument('value', nargs='?')
     return ap
 
@@ -53,7 +57,12 @@ def cmd_profiles(a):
 
 def cmd_inspect(a):
     from porter import pipeline
-    info = pipeline.inspect(a.folder)
+    from porter.upstream import BuildError
+    try: info = pipeline.inspect(a.folder)
+    except BuildError as e:
+        if a.json: _print_json({'error': str(e)})
+        else: print(e, file=sys.stderr)
+        return 2
     if a.json: _print_json(info); return 0 if info['supported'] else 2
     print(f'{info["title_id"]}  {info.get("name", "")}\n  base: {info["base"]}')
     for u in info['updates']: print(f'  update {u["version"]}: {u["file"]}')
@@ -116,6 +125,25 @@ def cmd_devices(a):
     return 0
 
 
+def cmd_tools(a):
+    from porter import fetch
+    from porter.upstream import BuildError
+    names = [{'ndk': 'Android NDK', 'dotnet': '.NET SDK', 'adb': 'adb'}[n.strip()] for n in a.only.split(',') if n.strip()] or None
+    if a.download:
+        def go():
+            items = fetch.plan(names)
+            if not items: fetch.PROG.say('nothing to download: every tool is there'); return
+            for it in items: fetch.PROG.say(f'{it.name} {it.version} ({it.size / 2**20:,.0f} MB) from {it.url}, license: {it.license}')
+            fetch.download(items)
+        return _with_progress(a.progress, go)
+    try: items = fetch.plan(names)
+    except (BuildError, OSError) as e: print(f'cannot read the download lists: {e}', file=sys.stderr); return 1
+    if a.json: _print_json([it.as_dict() for it in items]); return 0
+    for it in items: print(f'{it.name:12} {it.version:16} {it.size / 2**20:8,.0f} MB  {it.url}\n{"":12} license: {it.license}')
+    print('porter tools --download fetches them' if items else 'nothing to download: every tool is there')
+    return 0
+
+
 def cmd_config(a):
     from porter import config
     if a.key is None:
@@ -130,4 +158,4 @@ def cmd_config(a):
 def main(argv):
     if hasattr(sys.stdout, 'reconfigure'): sys.stdout.reconfigure(encoding='utf-8', errors='replace')   # game names and progress bars on a Windows console
     a = _parser().parse_args(argv)
-    return {'doctor': cmd_doctor, 'profiles': cmd_profiles, 'inspect': cmd_inspect, 'port': cmd_port, 'install': cmd_install, 'devices': cmd_devices, 'config': cmd_config}[a.cmd](a)
+    return {'doctor': cmd_doctor, 'profiles': cmd_profiles, 'inspect': cmd_inspect, 'port': cmd_port, 'install': cmd_install, 'devices': cmd_devices, 'tools': cmd_tools, 'config': cmd_config}[a.cmd](a)
