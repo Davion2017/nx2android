@@ -19,7 +19,7 @@ Unzip `nx2android-<version>.zip` anywhere (a short path such as `C:\nx2android` 
 ## 3. Port tab
 
 1. Choose the game's folder. The card under it says which game it found and whether it can be ported: the **Games** tab lists the supported ones.
-2. Click **Port**. The first port of a game takes a while (from 15 minutes to over an hour: extraction, rewriting the game's code, translating its shaders). Later ports reuse what has not changed.
+2. Click **Port**. The first port of a game takes a while: extraction, rewriting the game's code, translating its shaders (2 to 6 minutes on a fast 20-thread PC with an SSD, much longer on a slow one or a hard disk). Later ports reuse what has not changed.
 3. The APK and the game's data folder (`<Game>-data`) appear in the game's folder. **Open output folder** shows them.
 
 ## 4. Put it on the device

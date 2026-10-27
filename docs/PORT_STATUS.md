@@ -22,11 +22,13 @@ A release ships when every row here has been ported by the bundle it ships.
 
 ## Results
 
+The v0.1.0 check (2026-10-27): bundle `7d2b374` ported four games and stopped on NEO, whose committed shader tables lacked the 20 Unity compute shaders the split reads since `386efda`. Bundle `e89aecb` differs from it only in NEO's profile tables and ported NEO. v0.1.0 differs from `e89aecb` only in documents. NEO's added shaders have not yet been played on a device.
+
 <!-- port_check rows -->
 | Game | Title ID | Version | Result | Output | Time | Bundle | Date |
 |---|---|---|---|---|---|---|---|
 | Graveyard Keeper 2 | `0100005027A18000` | 1.0.4 | ported | APK 1 MB, data 1.4 GB, 1 DLC | 4 min (from scratch) | 7d2b374 | 2026-10-27 |
-| NEO | `010043B013C5C000` | | **failed** (exit 1): the split shader tables differ from game profile 010043B013C5C000's: shader_map.tsv, shader_facts.tsv (game files not the versions the profile registers?) | | 2 min (from scratch) | 7d2b374 | 2026-10-27 |
+| NEO: The World Ends with You | `010043B013C5C000` | 1.03 | ported | APK 2 MB, data 6.7 GB, 2 DLC | 3 min (from scratch) | e89aecb | 2026-10-27 |
 | Unpacking | `0100701015846000` | 2.01 | ported | APK 2 MB, data 1.0 GB | 2 min (from scratch) | 7d2b374 | 2026-10-27 |
 | Viractal | `0100FD501F95A000` | 1.4.5 | ported | APK 2 MB, data 2.3 GB | 5 min (from scratch) | 7d2b374 | 2026-10-27 |
 | Xenoblade Chronicles 3 | `010074F013262000` | 2.2.0 | ported | APK 2 MB, data 19.2 GB, 4 DLC | 4 min (from scratch) | 7d2b374 | 2026-10-27 |
