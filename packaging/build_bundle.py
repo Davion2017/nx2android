@@ -22,6 +22,7 @@ def main():
     for src, dst in (('packaging/INSTALL.md', 'INSTALL.md'), ('README.md', 'README.md'), ('docs/ARCHITECTURE.md', 'docs/ARCHITECTURE.md'), ('nxnative/LICENSE', 'LICENSE')):
         (APP / dst).parent.mkdir(parents=True, exist_ok=True); shutil.copy2(ROOT / src, APP / dst)
     ver = subprocess.run(['git', '-C', str(ROOT), 'describe', '--always', '--dirty'], capture_output=True, text=True).stdout.strip() or 'dev'
+    (APP / 'VERSION').write_text(ver + '\n', encoding='utf-8')   # the release check (devtools/port_check.py) records it
     z = shutil.make_archive(str(DIST / f'nx2android-{ver}'), 'zip', DIST, 'nx2android')
     print(f'{APP} ({len(files)} nxnative files)\n{z} ({Path(z).stat().st_size / 2**20:.0f} MB)')
 
