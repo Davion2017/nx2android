@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # A game profile's Android keys: dm/games/<id>/android.tsv (key <TAB> value, # comments), beside the profile's game.tsv. A profile without one has not been ported to Android.
 # Keys (docs/ARCHITECTURE.md "Game profiles on Android"):
-#   status       playable | boots | experimental
+#   status       playable | wip (plays, but parts are missing: docs/PORT_STATUS.md says which) | boots | experimental
 #   tested       <version> <device>: what the status was checked on
 #   package      the app's package name (default org.nx2a.t<title ID in lowercase>: a package name's parts start with a letter)
 #   orientation  landscape (default) | any
@@ -20,7 +20,7 @@ ANDROID = HERE.parent
 sys.path.insert(0, str(ANDROID.parent / 'games'))
 import game   # noqa: E402  (the profile folders, DM_GAMES_DIR included)
 
-STATUS = ('playable', 'boots', 'experimental')
+STATUS = ('playable', 'wip', 'boots', 'experimental')
 SETTINGS = {'overlay': ('0', '1'), 'rumble': ('0', '1'), 'docked': ('0', '1')}   # the pause menu's settings (front_android.c settings_load)
 REQUIRES = ('bcn',)
 KINDS = {'stick_l': 'OV_STICK_L', 'stick_r': 'OV_STICK_R', 'button': 'OV_BUTTON', 'dpad': 'OV_DPAD', 'menu': 'OV_MENU'}

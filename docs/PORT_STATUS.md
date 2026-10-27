@@ -1,10 +1,27 @@
 # Port status
 
-Which games the player's bundle has been checked to port, from the game files to an APK and a data pack, on a Windows PC with nothing from the developer's machine: the bundle unzipped into an empty folder, its own player folder, the tools from its **Download missing tools**, and a game folder holding only the game's NSP files. Whether a game then plays, and on which device, is the profile's `status` and `tested` (the README's games table).
+Every game nx2android has a profile for: whether it plays, and whether the player's bundle ports it. This page is the only place either is kept; the profile's `status` (`playable`, `wip`, `boots`, `experimental`) and `tested` keys say the same in short.
 
-A release ships when every row here has been ported by the bundle it ships.
+## Playing
 
-## When to run the check again
+Whether the port plays, on which device and game version, and what was checked. The device's GPU must read BC-compressed textures (Adreno, Xclipse; not Mali or PowerVR).
+
+| Game | Title ID | Status |
+|---|---|---|
+| Graveyard Keeper 2 | `0100005027A18000` | playable on the Legion Y700, update 1.0.4: the opening at a held 30 fps (as on the Switch) |
+| Hades II | `0100A00019DE0000` | playable on the Legion Y700, update 1.0 (v655360): the title, a new save, the Crossroads and runs in Erebus with combat, at a held 60 fps (as on the Switch) |
+| NEO: The World Ends with You | `010043B013C5C000` | playable on a Lenovo Legion Y700 (Snapdragon 8 Elite, Adreno 830), update 1.03 |
+| Unpacking | `0100701015846000` | playable on the Legion Y700, update 2.01: by touch, docked and handheld, at a held 60 fps (as on the Switch) |
+| Viractal: Will You Trust Your Party? | `0100FD501F95A000` | playable on the Legion Y700 (board game turns, name entry), update 1.4.5 |
+| Xenoblade Chronicles 3 | `010074F013262000` | **work in progress**: some effects and models do not draw yet. Hundreds of its shaders are in no game file; the app captures each one the game asks for, and only the next port translates them, so until then those draws are skipped. Plays on the Legion Y700, update 2.2.0 with its DLC: the opening, battles and the story to Torchlight Hill. Holds 30 fps in Performance and Resolution mode, in the field and in battle (frame p95 under 35 ms on Everblight Plain; heavy views of Torchlight Hill took about 40 ms a frame before these fixes and are not re-measured) |
+
+## Porting with the bundle
+
+Which games the player's bundle has been checked to port, from the game files to an APK and a data pack, on a Windows PC with nothing from the developer's machine: the bundle unzipped into an empty folder, its own player folder, the tools from its **Download missing tools**, and a game folder holding only the game's NSP files.
+
+A release ships when every row of the results below has been ported by the bundle it ships.
+
+### When to run the check again
 
 | What changed | Run the check for |
 |---|---|
@@ -13,14 +30,14 @@ A release ships when every row here has been ported by the bundle it ships.
 | The core (`porter/`, `packaging/`, `nxnative/dm/{host,gfx,tools,android,third_party}`, `nxnative/scripts/`), or the NDK or .NET version | every game |
 | `gui/` or docs only | nothing (start the app once) |
 
-## How
+### How
 
 1. Build the bundle (`python packaging/build_bundle.py`) and unzip it into an empty folder, say `C:\nx2a-test\nx2android`.
 2. Once per test folder, with a player folder of its own: `set NX2A_HOME=C:\nx2a-test\home`, then `nx2android.exe -m porter tools --download` and `nx2android.exe -m porter config keys <prod.keys>`.
 3. Give each game a folder of hard links to its NSP files (`mklink /H <new> <nsp>`, or `ln` in Git Bash): a port from scratch without copying the game.
 4. `python devtools/port_check.py C:\nx2a-test\nx2android <game folder> … --fresh --write` ports each one and puts its row below, replacing that game's earlier row.
 
-## Results
+### Results
 
 The v0.1.0 check (2026-10-27): bundle `7d2b374` ported four games and stopped on NEO, whose committed shader tables lacked the 20 Unity compute shaders the split reads since `386efda`. Bundle `e89aecb` differs from it only in NEO's profile tables and ported NEO. v0.1.0 differs from `e89aecb` only in documents. The v0.1.0 NEO port, installed beside the player's own as `org.nx2a.neo.test`, then played on the Legion Y700: through the DLC gifts and the opening, into free roam at Scramble Crossing with its crowd, at 40-60 fps, with no new `[RED]` lines.
 

@@ -6,16 +6,7 @@ This is the Android port of [nxnative](https://github.com/seedds/nxnative), whic
 
 ## Games
 
-| Game | Title ID | Status |
-|---|---|---|
-| Graveyard Keeper 2 | `0100005027A18000` | playable on the Legion Y700, update 1.0.4: the opening at a held 30 fps (as on the Switch) |
-| Hades II | `0100A00019DE0000` | playable on the Legion Y700, update 1.0 (v655360): the title, a new save, the Crossroads and runs in Erebus with combat, at a held 60 fps (as on the Switch) |
-| NEO: The World Ends with You | `010043B013C5C000` | playable on a Lenovo Legion Y700 (Snapdragon 8 Elite, Adreno 830), update 1.03 |
-| Unpacking | `0100701015846000` | playable on the Legion Y700, update 2.01: by touch, docked and handheld, at a held 60 fps (as on the Switch) |
-| Viractal: Will You Trust Your Party? | `0100FD501F95A000` | playable on the Legion Y700 (board game turns, name entry), update 1.4.5 |
-| Xenoblade Chronicles 3 | `010074F013262000` | playable on the Legion Y700, update 2.2.0 with its DLC: the opening, battles and the story to Torchlight Hill. Holds 30 fps in Performance and Resolution mode, in the field and in battle (frame p95 under 35 ms on Everblight Plain; heavy views of Torchlight Hill took about 40 ms a frame before these fixes and are not re-measured). Some shaders exist only at run time; the app captures them and the next port adds them |
-
-Each game is a profile in `nxnative/dm/games/<title ID>/` with an `android.tsv`. The device's GPU must read BC-compressed textures (Adreno, Xclipse; not Mali or PowerVR).
+Each game is a profile in `nxnative/dm/games/<title ID>/` with an `android.tsv`. Which games play, on which device, and which ones each release has been checked to port: [docs/PORT_STATUS.md](docs/PORT_STATUS.md). The device's GPU must read BC-compressed textures (Adreno, Xclipse; not Mali or PowerVR).
 
 ## For players: port a game without programming
 
@@ -24,7 +15,7 @@ Each game is a profile in `nxnative/dm/games/<title ID>/` with an `android.tsv`.
 3. **Port** tab: choose the folder with the game's NSP or XCI files (base game, update, DLC) and click **Port**.
 4. Tick **Install on the device when done** with the device plugged in and USB debugging on, or copy the APK and the data folder yourself.
 
-The step-by-step guide is [packaging/INSTALL.md](packaging/INSTALL.md). Which games each release has been checked to port: [docs/PORT_STATUS.md](docs/PORT_STATUS.md). You need your own game files and `prod.keys`, dumped from your own Switch; the tool never ships or downloads either. NSZ files must be decompressed to NSP first.
+The step-by-step guide is [packaging/INSTALL.md](packaging/INSTALL.md). You need your own game files and `prod.keys`, dumped from your own Switch; the tool never ships or downloads either. NSZ files must be decompressed to NSP first.
 
 ## Setup from the repository
 

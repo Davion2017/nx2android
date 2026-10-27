@@ -36,7 +36,7 @@ A profile is offered for Android when it has an `android.tsv`; the profiles with
 
 | Key | Meaning |
 |---|---|
-| `status` | `playable` (tested end to end on a device), `boots` (starts, not playable yet) or `experimental` |
+| `status` | `playable` (tested end to end on a device), `wip` (plays on a device, but parts are missing: docs/PORT_STATUS.md says which), `boots` (starts, not playable yet) or `experimental` |
 | `tested` | `<version> <device>`: the version and device the status was checked on |
 | `package` | The app's package name (default `org.nx2a.t<title ID in lowercase>`) |
 | `orientation` | `landscape` (default) or `any` |

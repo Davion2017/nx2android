@@ -48,7 +48,7 @@ notes.append(f'{len(diff)} commits touch the shared core since the subtree')
 
 # 3. Game profiles: data only, android.tsv keys from the documented set
 KEYS = {'status', 'tested', 'package', 'orientation', 'requires', 'setting', 'env', 'overlay'}
-STATUS = {'playable', 'boots', 'experimental'}
+STATUS = {'playable', 'wip', 'boots', 'experimental'}
 bad = []
 for f in files:
     m = re.match(r'nxnative/dm/games/(0100[0-9A-F]{12})/(.+)', f)
@@ -63,7 +63,7 @@ for f in atsv:
         if r[0] not in KEYS: bad.append(f'{f}: key {r[0]}')
     st = [r[1] for r in rows if r[0] == 'status']
     if len(st) != 1 or st[0] not in STATUS: bad.append(f'{f}: status {st}')
-    if st == ['playable'] and not any(r[0] == 'tested' for r in rows): bad.append(f'{f}: playable without tested')
+    if st in (['playable'], ['wip']) and not any(r[0] == 'tested' for r in rows): bad.append(f'{f}: {st[0]} without tested')
 check(f'android.tsv keys and status valid ({len(atsv)} profiles)', not bad, '; '.join(bad))
 ap = (R / 'nxnative/dm/android/tools/android_profile.py').read_text(encoding='utf-8')
 missing = [k for k in KEYS if f"'{k}'" not in ap]

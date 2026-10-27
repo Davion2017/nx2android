@@ -17,7 +17,7 @@ from gui.runner import Porter, call_json
 
 LANGUAGES = [('', 'English (default)'), ('ja', 'Japanese'), ('fr', 'French'), ('de', 'German'), ('it', 'Italian'), ('es', 'Spanish'), ('nl', 'Dutch'), ('pt', 'Portuguese'),
              ('ru', 'Russian'), ('ko', 'Korean'), ('zh-Hans', 'Chinese (Simplified)'), ('zh-Hant', 'Chinese (Traditional)')]
-STATUS_COLOUR = {'playable': '#2e7d32', 'boots': '#ef6c00', 'experimental': '#ef6c00', 'ios only': '#757575'}
+STATUS_COLOUR = {'playable': '#2e7d32', 'wip': '#ef6c00', 'boots': '#ef6c00', 'experimental': '#ef6c00', 'ios only': '#757575'}
 
 
 def hms(s):
@@ -332,7 +332,7 @@ class GamesTab(QWidget):
         self.table = QTableWidget(0, 4); self.table.setHorizontalHeaderLabels(['Status', 'Game', 'Title ID', 'Tested on'])
         self.table.verticalHeader().setVisible(False); self.table.setEditTriggers(QTableWidget.NoEditTriggers); self.table.setSortingEnabled(True)
         hh = self.table.horizontalHeader(); hh.setSectionResizeMode(1, QHeaderView.Stretch); hh.setSectionResizeMode(2, QHeaderView.ResizeToContents); hh.setSectionResizeMode(3, QHeaderView.Stretch)
-        lab = QLabel('Games with a profile. <b>playable</b> and <b>boots</b> ones can be ported; <i>ios only</i> profiles run on iPhone (nxnative) and are not ported to Android yet.')
+        lab = QLabel('Games with a profile. <b>playable</b>, <b>wip</b> (plays, with parts missing) and <b>boots</b> ones can be ported; <i>ios only</i> profiles run on iPhone (nxnative) and are not ported to Android yet.')
         lab.setWordWrap(True); lab.setTextFormat(Qt.RichText)
         v.addWidget(lab); v.addWidget(self.table)
         call_json(self, ['profiles', '--all', '--json'], self.got)

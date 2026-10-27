@@ -8,8 +8,8 @@
 # reset on the completion thread, and the replay on its own thread (env below), it holds 30 fps in Performance and Resolution mode, field and battle:
 # frame p50 33.2 ms, p95 33.7-34.5 ms (Resolution-mode battles with ~2,800 draws included; they were 36 ms with the replay on the render thread).
 # Hundreds of its effect and model shaders are in no game file: the app captures each one a draw misses, and the next port with --install translates them
-# (155 so far, from the opening and the first field); until then such draws are skipped.
-status	playable
+# (155 so far, from the opening and the first field); until then such draws are skipped, so the status is wip until the shaders are ported.
+status	wip
 tested	v655360 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.xc3
 orientation	landscape

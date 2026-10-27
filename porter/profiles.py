@@ -9,7 +9,7 @@ class Entry:
     id: str
     name: str
     android: bool        # has an android.tsv
-    status: str          # playable / boots / experimental; 'ios only' without android.tsv
+    status: str          # playable / wip / boots / experimental; 'ios only' without android.tsv
     tested: str
     package: str
 

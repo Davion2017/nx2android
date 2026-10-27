@@ -19,7 +19,7 @@ def main():
     files = tracked('nxnative')   # the committed engine and profiles only: no local builds, keys or game files
     for f in files:
         d = APP / f; d.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(ROOT / f, d)
-    for src, dst in (('packaging/INSTALL.md', 'INSTALL.md'), ('README.md', 'README.md'), ('docs/ARCHITECTURE.md', 'docs/ARCHITECTURE.md'), ('nxnative/LICENSE', 'LICENSE')):
+    for src, dst in (('packaging/INSTALL.md', 'INSTALL.md'), ('README.md', 'README.md'), ('docs/ARCHITECTURE.md', 'docs/ARCHITECTURE.md'), ('docs/PORT_STATUS.md', 'docs/PORT_STATUS.md'), ('nxnative/LICENSE', 'LICENSE')):
         (APP / dst).parent.mkdir(parents=True, exist_ok=True); shutil.copy2(ROOT / src, APP / dst)
     ver = subprocess.run(['git', '-C', str(ROOT), 'describe', '--always', '--dirty'], capture_output=True, text=True).stdout.strip() or 'dev'
     (APP / 'VERSION').write_text(ver + '\n', encoding='utf-8')   # the release check (devtools/port_check.py) records it
