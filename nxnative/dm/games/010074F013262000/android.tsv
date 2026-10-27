@@ -9,6 +9,8 @@
 # frame p50 33.2 ms, p95 33.7-34.5 ms (Resolution-mode battles with ~2,800 draws included; they were 36 ms with the replay on the render thread).
 # Thin black slivers over the cliffs and grass of Everblight Plain (2-6% of frames, the user's report of black flicker; 2026-10-27): its mesh-transforming
 # vertex shaders ran unordered with the G-buffer draws on Adreno; fixed in the core (gfx_vk_exec.c prepare_draw): 0 in 6 recordings of 361 frames.
+# Grass flickering on Everblight Plain (whole blades black in some frames; 2026-10-28): its swayed grass cards met records the sway shaders had not written yet,
+# despite barriers; fixed in the core (gfx_vk_exec.c prepare_draw, rd_read): blades left black 900-2,300 a frame -> 0, on-screen flicker 4-8 -> 0.0-0.5, 30 fps held.
 # Hundreds of its effect and model shaders are in no game file: the app captures each one a draw misses, and the next port with --install translates them
 # (260 so far, 2026-10-27, from the opening, the first field and its battles); until then such draws are skipped, so the status is wip until the shaders are ported.
 status	wip
