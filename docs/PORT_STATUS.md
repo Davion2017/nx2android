@@ -23,4 +23,11 @@ A release ships when every row here has been ported by the bundle it ships.
 ## Results
 
 <!-- port_check rows -->
+| Game | Title ID | Version | Result | Output | Time | Bundle | Date |
+|---|---|---|---|---|---|---|---|
+| Graveyard Keeper 2 | `0100005027A18000` | 1.0.4 | ported | APK 1 MB, data 1.4 GB, 1 DLC | 4 min (from scratch) | 7d2b374 | 2026-10-27 |
+| NEO | `010043B013C5C000` | | **failed** (exit 1): the split shader tables differ from game profile 010043B013C5C000's: shader_map.tsv, shader_facts.tsv (game files not the versions the profile registers?) | | 2 min (from scratch) | 7d2b374 | 2026-10-27 |
+| Unpacking | `0100701015846000` | 2.01 | ported | APK 2 MB, data 1.0 GB | 2 min (from scratch) | 7d2b374 | 2026-10-27 |
+| Viractal | `0100FD501F95A000` | 1.4.5 | ported | APK 2 MB, data 2.3 GB | 5 min (from scratch) | 7d2b374 | 2026-10-27 |
+| Xenoblade Chronicles 3 | `010074F013262000` | 2.2.0 | ported | APK 2 MB, data 19.2 GB, 4 DLC | 4 min (from scratch) | 7d2b374 | 2026-10-27 |
 <!-- /port_check rows -->
