@@ -58,6 +58,8 @@ The source of each switch is in `nxnative/dm/android/` unless noted. Check the c
 | `DM_VK_X_NOPRERESET=1` | start-up (`gfx_vk_core.c`) | a submission slot's command buffers are reset as they are begun again, on the replay thread, instead of on the completion thread when its submission is done |
 | `DM_NVN_ACQ_NOW=1` | live (`gfx/nvn/hle_nvn.c`) | the window acquire's sync fenced at all work so far (the old way) instead of at the texture's last present: Xenoblade Chronicles 3 then waits for its whole frame on the GPU before it submits the next |
 | `DM_VK_X_NOBC=1` | live | every draw sets all its dynamic state and binds again (no bind cache; the cache starts empty in each command buffer and each render pass) |
+| `DM_VK_X_RDKEEP=1` | live | runs of rasterizer-discard draws (vertex shaders that write memory) stay in the pass of the draws around them instead of a pass of their own: Xenoblade Chronicles 3 then draws thin black slivers over cliffs and grass in a few percent of frames |
+| `DM_VK_X_SKIPVS=<key>[,<key>...]` | live | leave out the draws whose vertex shader key (hex, as the traces print it; up to 8) is listed: bisect which shaders an artifact needs, a group at a time (it found XC3's slivers from 40 candidates in 4 rounds) |
 | `DM_VK_RP=0` | start-up | dynamic rendering instead of cached `VkRenderPass` objects with imageless framebuffers (Adreno's `vkCmdBeginRendering` cost about 40 µs a pass) |
 
 ## Frame pacing and modes
