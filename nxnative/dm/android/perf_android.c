@@ -121,6 +121,10 @@ static int fps_pin(void) {   // a DM_CTL "env DM_FPS_PIN=40" line holds that ste
 static int64_t g_frame_cost;
 void dm_perf_frame_cost(int64_t ns) { g_frame_cost = ns; }
 static void adapt_frame(int64_t work, int64_t now) {
+    // A long frame in which the replay and the GPU did next to nothing is a load (a loading screen, the game reading files on its main thread), not a frame the
+    // rate could fit: it is not judged. Hades II's room changes gave ~10 frames of 28-680 ms with 0.3-0.4 ms of GPU work, the rate stepped down to 40 fps,
+    // and each fight began at 40 until it climbed back 4 s later
+    if (g_frame_cost > 0 && g_frame_cost < 1500000 && work > STEPS[g_step]) return;
     if (g_frame_cost > work) work = g_frame_cost;
     if (!g_adapt) return;
     g_work_hist[g_nwork++ % 64] = work;
