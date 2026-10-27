@@ -106,6 +106,25 @@ ps_other.bin	43	pixel	1f8ea2219221c13c	/Data\Resources\unity default resources#H
 ps_other.bin	44	pixel	bb391e6732ab3fd2	/Data\Resources\unity default resources#Hidden/InternalErrorShader#var19.5
 ps_other.bin	45	pixel	64a27b04e1c10554	/Data\Resources\unity default resources#Hidden/InternalErrorShader#var19.6
 ps_other.bin	46	pixel	fe472a31ac439976	/Data\Resources\unity default resources#Hidden/InternalErrorShader#var19.7
+cs_other.bin	0	compute	c14c38dc0995138c	/Data\Resources\unity default resources#Internal-BlendShape#main.0
+cs_other.bin	1	compute	c15a37486207a474	/Data\Resources\unity default resources#Internal-BlendShape#main.0
+cs_other.bin	2	compute	edf5e7233ff7b56d	/Data\Resources\unity default resources#Internal-BlendShape#main.0
+cs_other.bin	3	compute	0590c393eb8f9398	/Data\Resources\unity default resources#Internal-Skinning#main.0
+cs_other.bin	4	compute	075c5c9efdc81ff7	/Data\Resources\unity default resources#Internal-Skinning#main.0
+cs_other.bin	5	compute	0eb16c5904ac0f2e	/Data\Resources\unity default resources#Internal-Skinning#main.0
+cs_other.bin	6	compute	171278371400c51a	/Data\Resources\unity default resources#Internal-Skinning#main.0
+cs_other.bin	7	compute	245a8a3711587177	/Data\Resources\unity default resources#Internal-Skinning#main.0
+cs_other.bin	8	compute	330d8471139aa85c	/Data\Resources\unity default resources#Internal-Skinning#main.0
+cs_other.bin	9	compute	3c27bfbd9f017a47	/Data\Resources\unity default resources#Internal-Skinning#main.0
+cs_other.bin	10	compute	40c1ec7035437eef	/Data\Resources\unity default resources#Internal-Skinning#main.0
+cs_other.bin	11	compute	7337533f69fedb68	/Data\Resources\unity default resources#Internal-Skinning#main.0
+cs_other.bin	12	compute	7c2d1cefc6bb9dca	/Data\Resources\unity default resources#Internal-Skinning#main.0
+cs_other.bin	13	compute	babd45ff8546bc0f	/Data\Resources\unity default resources#Internal-Skinning#main.0
+cs_other.bin	14	compute	d085e096ff9de3b0	/Data\Resources\unity default resources#Internal-Skinning#main.0
+cs_other.bin	15	compute	d4e96c6524d1d634	/Data\Resources\unity default resources#Internal-Skinning#main.0
+cs_other.bin	16	compute	d7ff55bb641b24c3	/Data\Resources\unity default resources#Internal-Skinning#main.0
+cs_other.bin	17	compute	e2c596865eba480e	/Data\Resources\unity default resources#Internal-Skinning#main.0
+cs_other.bin	18	compute	fe702882b28575f0	/Data\Resources\unity default resources#Internal-Skinning#main.0
 vs_other.bin	47	vertex	0affb75ac4c13080	/Data\Resources\unity_builtin_extra#Hidden/BlitCopy#var19.0
 ps_other.bin	47	pixel	40350177e6b47ba1	/Data\Resources\unity_builtin_extra#Hidden/BlitCopy#var19.1
 vs_other.bin	48	vertex	a513be44baa428a7	/Data\Resources\unity_builtin_extra#Hidden/BlitCopyDepth#var19.0
@@ -25346,6 +25365,7 @@ vs_other.bin	13778	vertex	216aea81cabee3ba	/Data\resources.assets#CriMana/Switch
 vs_other.bin	13779	vertex	43ea1d133f09ebb9	/Data\resources.assets#CriMana/SwitchH264Rgb#var19.7
 ps_other.bin	9150	pixel	bd87ad448d18736f	/Data\resources.assets#CriMana/SwitchH264Rgb#var19.8
 ps_other.bin	9151	pixel	ff19b37b07dfbd35	/Data\resources.assets#CriMana/SwitchH264Rgb#var19.9
+cs_other.bin	19	compute	d223831a23373860	/Data\resources.assets#EyeHistogram#KEyeHistogram.0
 vs_other.bin	13780	vertex	93a4806e11b9c155	/Data\resources.assets#Hidden/Post FX/Ambient Occlusion#var19.0
 vs_other.bin	13781	vertex	5796d980836b6ec5	/Data\resources.assets#Hidden/Post FX/Ambient Occlusion#var19.1
 vs_other.bin	13782	vertex	e25ee3f24fce3a71	/Data\resources.assets#Hidden/Post FX/Ambient Occlusion#var19.10
