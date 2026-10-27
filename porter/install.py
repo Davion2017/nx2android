@@ -16,6 +16,7 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False):
     if not adb_exe: raise BuildError('adb not found: install Android platform-tools, or set its path with `porter config adb <path>`')
     adb = Adb(adb_exe, serial, log=say)
     PROG.stage('install', step='finding the device')
+    pushing = False
     try:
         dev = adb.pick()
         model = adb.prop('ro.product.model')
@@ -33,7 +34,7 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False):
         adb.install(apk, man['package'], replace_signer=replace_signer)
         PROG.set(step='letting the app create its files folder')
         if adb.prepare_app_files(man['package']): say('started the app once so Android made its files folder (it stops at once without its data)')
-        PROG.set(step='pushing the game data', done=0, total=man['bytes'], unit='B')
+        PROG.set(step='pushing the game data', done=0, total=man['bytes'], unit='B'); pushing = True
         adb.push_tree(data, files, keep=datapack.KEEP_ON_DEVICE, skip=(datapack.MANIFEST,), verify=lambda rel: rel.split('/', 1)[0] not in ('RomFS', 'aoc'),   # the game's own files change only with their version
                       progress=lambda d, t, note: PROG.set(done=d, total=t, note=note))
         stale = [rel for rel in adb.remote_sizes(files) if rel.split('/', 1)[0] in datapack.OWNED and not (data / rel).is_file()]
@@ -42,7 +43,7 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False):
             for i in range(0, len(stale), 64): adb.shell(f'cd {shlex.quote(files)} && rm -f ' + ' '.join(shlex.quote(r) for r in stale[i:i + 64]))
         adb.push_file(data / datapack.MANIFEST, f'{files}/{datapack.MANIFEST}')   # last: a pack on the device with its manifest is a complete one
     except AdbError as e:
-        try: gone = adb.serial and not adb.installed(man['package'])
+        try: gone = pushing and adb.serial in [s for s, st, _ in adb.devices() if st == 'device'] and not adb.installed(man['package'])   # a device that went away is not an uninstall
         except AdbError: gone = False
         if gone:   # Android deletes an app's files folder with the app: a push into it then fails part-way (a size mismatch)
             raise BuildError(f'{man["package"]} was uninstalled on the device while its data was being pushed ({e})') from e

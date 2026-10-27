@@ -22,7 +22,7 @@ A release ships when every row here has been ported by the bundle it ships.
 
 ## Results
 
-The v0.1.0 check (2026-10-27): bundle `7d2b374` ported four games and stopped on NEO, whose committed shader tables lacked the 20 Unity compute shaders the split reads since `386efda`. Bundle `e89aecb` differs from it only in NEO's profile tables and ported NEO. v0.1.0 differs from `e89aecb` only in documents. NEO's added shaders have not yet been played on a device.
+The v0.1.0 check (2026-10-27): bundle `7d2b374` ported four games and stopped on NEO, whose committed shader tables lacked the 20 Unity compute shaders the split reads since `386efda`. Bundle `e89aecb` differs from it only in NEO's profile tables and ported NEO. v0.1.0 differs from `e89aecb` only in documents. The v0.1.0 NEO port, installed beside the player's own as `org.nx2a.neo.test`, then played on the Legion Y700: through the DLC gifts and the opening, into free roam at Scramble Crossing with its crowd, at 40-60 fps, with no new `[RED]` lines.
 
 <!-- port_check rows -->
 | Game | Title ID | Version | Result | Output | Time | Bundle | Date |
