@@ -20,6 +20,9 @@ prod.keys
 title.keys
 /devtools/device.json
 
+# Game dumps: NSPs decompressed from NSZ, the ports made from them (APK, data pack, build folders); one folder per game, .gamedump/<game>/
+/.gamedump/
+
 # Python environment (python -m venv .venv)
 /.venv/
 
