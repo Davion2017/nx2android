@@ -12,7 +12,7 @@ This is the Android port of [nxnative](https://github.com/seedds/nxnative), whic
 | NEO: The World Ends with You | `010043B013C5C000` | playable on a Lenovo Legion Y700 (Snapdragon 8 Elite, Adreno 830), update 1.03 |
 | Unpacking | `0100701015846000` | playable on the Legion Y700, update 2.01: by touch, docked and handheld, at a held 60 fps (as on the Switch) |
 | Viractal: Will You Trust Your Party? | `0100FD501F95A000` | playable on the Legion Y700 (board game turns, name entry), update 1.4.5 |
-| Xenoblade Chronicles 3 | `010074F013262000` | playable on the Legion Y700, update 2.2.0 with its DLC: the opening, battles and the story to Torchlight Hill at 30 fps (heavy views of Torchlight Hill about 40 ms a frame). Some shaders exist only at run time; the app captures them and the next port adds them |
+| Xenoblade Chronicles 3 | `010074F013262000` | playable on the Legion Y700, update 2.2.0 with its DLC: the opening, battles and the story to Torchlight Hill. Holds 30 fps in Performance and Resolution mode, in the field and in battle (frame p95 under 35 ms on Everblight Plain; heavy views of Torchlight Hill took about 40 ms a frame before these fixes and are not re-measured). Some shaders exist only at run time; the app captures them and the next port adds them |
 
 Each game is a profile in `nxnative/dm/games/<title ID>/` with an `android.tsv`. The device's GPU must read BC-compressed textures (Adreno, Xclipse; not Mali or PowerVR).
 
