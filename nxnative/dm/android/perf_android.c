@@ -115,7 +115,13 @@ static int fps_pin(void) {   // a DM_CTL "env DM_FPS_PIN=40" line holds that ste
     if (st != pin) { pin = st; LOG("[perf] adaptive frame rate %s", st < 0 ? "free again" : "pinned"); }
     return pin;
 }
+// The frame's replay and GPU time (gfx_vk_present.c, before dm_perf_frame): the rate is judged on the largest of them and the presenting thread's work. With the
+// replay on a thread of its own (DM_NVN_ASYNC) Xenoblade Chronicles 3's presenting thread worked ~8 ms a frame, the rate stepped up to 40 fps for frames
+// of ~24 ms GPU time, and the display's switch to 120 Hz and the missed frames made 80-550 ms frames
+static int64_t g_frame_cost;
+void dm_perf_frame_cost(int64_t ns) { g_frame_cost = ns; }
 static void adapt_frame(int64_t work, int64_t now) {
+    if (g_frame_cost > work) work = g_frame_cost;
     if (!g_adapt) return;
     g_work_hist[g_nwork++ % 64] = work;
     { static unsigned k; if (++k % 600 == 0) LOG("[perf] adaptive frame rate: %.0f fps, frame work p50 %.1f / p90 %.1f / p95 %.1f ms (last %.1f ms)", 1e9 / STEPS[g_step], work_pct(50) / 1e6, work_pct(90) / 1e6, work_p95() / 1e6, work / 1e6); }

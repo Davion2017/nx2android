@@ -90,21 +90,23 @@ How to work a bug:
 ## Performance playbook
 
 1. **Read the per-frame line first:** replay ms (CPU), GPU busy ms, draws and passes, descriptor reuse. GPU busy depends on clocks, so compare at the same frame rate.
-2. **Overlap the CPU replay with the GPU.** Submit in pieces (`DM_VK_CB_DRAWS`, every 128 draws, between passes only, respecting the LRZ cut rule). NEO went from 36.7 to 15.7 ms.
-3. **Cut passes.** Defer uniform updates instead of ending the pass, and keep the pass when the same targets are set again. NEO went from 145 passes for 148 draws to 28.
-4. **Reuse descriptor sets.** Dynamic uniform-buffer offsets took NEO from 6% reuse to 86%, plus a per-submission texture-view cache.
-5. **Frame pacing** (`perf_android.c`):
+2. **Check that the frames overlap at all.** If a frame takes replay + the GPU's whole tail, trace the render thread with `DM_NVN_SEQ=N`: Xenoblade Chronicles 3 waited in `SyncWait` on its window-acquire sync, which the host fenced at all work so far instead of at the texture's last present; and every submission once took submission slot 0 and waited for the one before on the GPU (fixing that took its docked frames from 37 to 33 ms).
+3. **Overlap the CPU replay with the GPU.** Submit in pieces (`DM_VK_CB_DRAWS`, every 128 draws, between passes only, respecting the LRZ cut rule). NEO went from 36.7 to 15.7 ms. When the render thread is still the limit (replay plus the game's own work), `DM_NVN_ASYNC=1` moves the replay to a thread of its own; check it with turning recordings, not single shots: XC3 drew whole-screen garbage in about half of them until the window acquire waited for the queued jobs' replay (and texture registrations were versioned by job), then 0 in 20.
+4. **Cut passes.** Defer uniform updates instead of ending the pass, and keep the pass when the same targets are set again. NEO went from 145 passes for 148 draws to 28. Not across NVN barriers: keeping XC3's G-buffer pass over its fragment- and primitive-order barriers tore its characters in some frames (storage written by rasterizer-discard vertex draws).
+5. **Reuse descriptor sets.** Dynamic uniform-buffer offsets took NEO from 6% reuse to 86%, plus a per-submission texture-view cache.
+6. **Frame pacing** (`perf_android.c`):
    - The governor steps 60/40/30 fps and matches the display rate. It judges p90 frame work after 4 s at a new rate, because clocks take seconds to ramp.
    - Keep the ADPF target at the game's own period.
    - Make sure frame start is recorded on every present path: NEO's governor never ran until it was.
-6. **Threads:** if hitches remain, sample per-thread cores and CPU clocks over adb (`/proc/<pid>/task/*/stat`, cpufreq). NEO's main thread sat outside the ADPF session on half-clocked mid cores while the prime cores idled; the busiest threads now join the session every 300 frames.
-7. **Test a rate directly before blaming the port.** `env DM_FPS_PIN=40` holds a rate. NEO's crowd held 40 fps pinned (GPU 20.6 → 15.2 ms once clocks rose), which showed the governor was giving up too early.
-8. **GPU profile** with `DM_VK_PASS_TIMES=1` (start-up only; it disturbs Adreno's binning, so compare runs).
+7. **Threads:** if hitches remain, sample per-thread cores and CPU clocks over adb (`/proc/<pid>/task/*/stat`, cpufreq). NEO's main thread sat outside the ADPF session on half-clocked mid cores while the prime cores idled; the busiest threads now join the session every 300 frames.
+8. **Test a rate directly before blaming the port.** `env DM_FPS_PIN=40` holds a rate. NEO's crowd held 40 fps pinned (GPU 20.6 → 15.2 ms once clocks rose), which showed the governor was giving up too early.
+9. **GPU profile** with `DM_VK_PASS_TIMES=1` (start-up only; it disturbs Adreno's binning, so compare runs).
    - If the load/store A/B (`DM_VK_X_DEPTH`, `DM_VK_X_COLOR`) saves under about 1 ms, the cost is the game's own shading.
    - The only levers left then lower image quality (render resolution, shader precision). That is the user's call; say so rather than promise 60 fps.
 
 ## Measurement traps
 
+- The CPU may be capped by policy, not heat: the Y700's `scaling_max_freq` stayed at ~2.0 GHz (of 3.5 / 4.3) at 55 °C. `dumpsys thermalservice` showed cached temperatures (93 °C) hours old: read `/sys/class/thermal/thermal_zone*/temp`.
 - Dropped submissions leave stale GPU timestamps.
 - One thermal sysfs zone can be stale; read several.
 - The GPU clock isn't readable on retail devices; infer it from GPU busy at a fixed rate.

@@ -425,26 +425,46 @@ VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, 
 }
 
 // ---------------- texture / sampler ID tables ----------------
-typedef struct { tex_t t; view_t v; uint8_t ok, has_v; } treg_t;
+// A registration as the replay of each submission sees it. NVN's texture pool is memory the GPU reads as it runs, and a game rewrites an ID once the work
+// that used it is done; with the replay on its own thread (DM_NVN_ASYNC) a submission is replayed after the game has gone on, and Xenoblade Chronicles 3
+// rewrites about 90 IDs a second with other textures: a frame replayed late drew with the next frame's textures (whole-screen garbage while the camera
+// turned). So each registration keeps the number of replay jobs queued when it was made, and a job sees the newest one made before it was queued
+// (nvn_jobs_queued / nvn_replaying_job, gfx/nvn/hle_nvn.c); without a replay thread that is always the newest. TREG_OLD older ones per ID, kept for IDs rewritten
+enum { TREG_OLD = 3 };
+typedef struct { tex_t t; view_t v; uint8_t ok, has_v; uint64_t seq; } treg_ver;
+typedef struct { treg_ver cur; treg_ver *old; } treg_t;   // old: TREG_OLD earlier versions, newest first (allocated at the first rewrite)
 static treg_t *g_treg; static int g_ntreg;
 uint64_t g_tex_gen = 1;   // changes whenever a texture ID is registered again or views go (gfx_vk_exec.c's per-submission view cache)
 static samp_par *g_sreg; static uint8_t *g_sreg_ok; static VkSampler *g_samp; static int g_nsreg;
 static pthread_mutex_t g_rmu = PTHREAD_MUTEX_INITIALIZER;
+__attribute__((weak)) uint64_t nvn_jobs_queued(void) { return 0; }
+__attribute__((weak)) uint64_t nvn_replaying_job(void) { return 0; }
 void mtl_reg_tex(int tid, const tex_t *t, const view_t *v) {
     if (tid < 0) return;
+    uint64_t seq = nvn_jobs_queued();
     pthread_mutex_lock(&g_rmu);
     if (tid >= g_ntreg) { int n = tid + 1024; g_treg = realloc(g_treg, n * sizeof *g_treg); memset(g_treg + g_ntreg, 0, (n - g_ntreg) * sizeof *g_treg); g_ntreg = n; }
-    g_tex_gen++; treg_t *r = &g_treg[tid]; r->ok = t != NULL; if (t) r->t = *t; r->has_v = v != NULL; if (v) r->v = *v;
+    g_tex_gen++; treg_t *r = &g_treg[tid];
+    if (r->cur.ok && seq) {   // keep the one replaced for the jobs queued before this registration
+        if (!r->old) r->old = calloc(TREG_OLD, sizeof *r->old);
+        if (r->old) { memmove(r->old + 1, r->old, sizeof *r->old * (TREG_OLD - 1)); r->old[0] = r->cur; }
+    }
+    r->cur.ok = t != NULL; if (t) r->cur.t = *t; r->cur.has_v = v != NULL; if (v) r->cur.v = *v; r->cur.seq = seq;
     pthread_mutex_unlock(&g_rmu);
 }
 void mtl_set_tex_pool_n(int n) { (void)n; }
+static __thread treg_ver t_treg;   // the version a lookup found, copied (the table may be rewritten or grow meanwhile)
 vkimg_t *vk_tex_by_id(int tid, const view_t **view_out, const tex_t **tex_out) {
+    uint64_t job = nvn_replaying_job();
     pthread_mutex_lock(&g_rmu);
-    treg_t *r = tid > 0 && tid < g_ntreg && g_treg[tid].ok ? &g_treg[tid] : NULL;
+    const treg_ver *r = tid > 0 && tid < g_ntreg ? &g_treg[tid].cur : NULL;
+    if (r && job && r->seq >= job && g_treg[tid].old)   // registered after this job was queued: the newest earlier one
+        for (int k = 0; k < TREG_OLD; k++) { const treg_ver *o = &g_treg[tid].old[k]; if (!o->ok) break; r = o; if (o->seq < job) break; }
+    int ok = r && r->ok; if (ok) t_treg = *r;
     pthread_mutex_unlock(&g_rmu);
-    if (!r) return NULL;
-    if (view_out) *view_out = r->has_v ? &r->v : NULL; if (tex_out) *tex_out = &r->t;
-    return (vkimg_t *)1;   // presence only: the caller makes the view with vk_tex_view (the registered texture copy is stable until re-registered)
+    if (!ok) return NULL;
+    if (view_out) *view_out = t_treg.has_v ? &t_treg.v : NULL; if (tex_out) *tex_out = &t_treg.t;
+    return (vkimg_t *)1;   // presence only: the caller makes the view with vk_tex_view
 }
 static VkSamplerAddressMode wrap(int w) {
     switch (w) { case 1: return VK_SAMPLER_ADDRESS_MODE_REPEAT; case 6: return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT; case 2: case 3: return VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE;

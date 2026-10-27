@@ -14,7 +14,7 @@ The source of each switch is in `nxnative/dm/android/` unless noted. Check the c
 | `DM_VK_SHOTS=N` | live | save each of the next N presented frames as `frame_<n>.ppm` in the files folder (logs "frame shots: presents a to b") |
 | `DM_VK_SHOT=n1,n2` | start-up | headless runs: save those presents (`DM_VK_SHOT_DIR`) |
 | `DM_VK_PASSDUMP=1` / `=N` | live | dump each pass's first colour target and its depth (PPM, NaN counts, depth stretched) for one frame; `=N` waits N−1 presents first. **The dump adds barriers and depth reads, which can hide bugs** |
-| `DM_VK_TRACE_PASS=-2` / `=n` | live | `-2` lists one submission's passes; `n` logs every draw of pass n once (targets, depth target, textures, pipeline state) |
+| `DM_VK_TRACE_PASS=-2` / `=n` | live | `-2` lists one submission's passes; `n` logs every draw of pass n once (targets, depth target, textures, pipeline state); the `-2` list also shows each barrier's NVN bits and where each pass was ended from (an offset in `libdmhost.so`) |
 | `DM_VK_TRACE_SIZE=WxH[:fmt[:fmt]][#n]` | live | trace the (n+1)th pass whose first colour target has that size (and formats): pass numbers move by tens from frame to frame |
 | `DM_VK_TRACE_FRAME=WxH[:fmt[:fmt]]` | live, one submission | trace every pass of the next submission whose targets match (a whole effect chain in one log); trace lines also describe each sampler (wrap, filters, LOD, border) |
 | `DM_VK_PASSDUMP_SKIP=n` / `=WxH`, `DM_VK_PASSDUMP_SIZE=WxH[,WxH]` | read when a dump starts | skip the first n passes, or start at the first pass of that size (depth included); only passes of those sizes (colour only) |
@@ -31,8 +31,10 @@ The source of each switch is in `nxnative/dm/android/` unless noted. Check the c
 | `DM_VK_SKIP_OPS`, `DM_VK_DBG_DRAW` | start-up | bisection aids: skip command kinds; 1 no draw calls, 2 no vertex buffers, 4 no descriptor sets |
 | `DM_VK_NOCULL=1` | start-up | no face culling (test for winding bugs) |
 | `DM_VK_PROF=1` / `=2` | live, arms once (`gfx_vk_exec.c`) | sampling profiler of the replay thread (1 ms of its CPU time): every 20 s the most frequent places, as offsets in `libdmhost.so` (`=1` charges libc and driver time to our first caller, shown `via:`; `=2` shows the place itself). Resolve with `llvm-symbolizer --obj=<build>/android/host-debug/libdmhost.so 0x<offset>`  **Xenoblade Chronicles 3 crashed in its own data code while loading a save in 2 of 2 runs with it on from start-up (0 of 4 without): arm it after loading** |
+| `DM_VK_PROF_TID=<tid>`, `DM_VK_PROF_OUT=<file>` | read when `DM_VK_PROF` arms | sample that thread of the process instead of the replay thread, and append the raw samples (leaf pc, lr, six frame-chain returns) to the file. **Host threads only: sampling Xenoblade Chronicles 3's render thread crashed the game in its own code** (use `DM_NVN_ASYNC=1` to profile the replay on a host thread) |
 | `DM_VK_CRUMBS=1` | start-up (`gfx_vk_exec.c`) | for a device lost (GPU hang): each pass end and dispatch writes its number into host-visible memory after a full barrier; when the device is lost the log names the last work the GPU finished and the passes after it, with their shaders. Slows the GPU |
 | `[timeline]` lines | with `DM_NVN_ASYNC=1` (`gfx/nvn/hle_nvn.c`) | per frame: the game's gap between a sync wait and its next submission, queue delay, replay, and the GPU's tail after the replay |
+| `DM_NVN_SEQ=N` | live (`gfx/nvn/hle_nvn.c`) | the next N frames' submissions, fences, acquires, sync waits (with the time waited) and presents, in order, with thread and time: what the render thread waits for |
 
 ## Behaviour toggles (for A/B; defaults are the fixes)
 
@@ -50,7 +52,11 @@ The source of each switch is in `nxnative/dm/android/` unless noted. Check the c
 | `DM_VK_NOPREWARM=1` | start-up | no pipeline prewarm |
 | `DM_VK_UBWC=1` | start-up | experiment: format lists instead of mutable formats on colour images |
 | `DM_VK_SYNC_PRESENT=1` | start-up | present on the game thread instead of the present thread |
-| `DM_NVN_ASYNC=1` | start-up (`gfx/nvn/hle_nvn.c`) | asynchronous replay: submissions and presents run on a replay thread, syncs wait for the job's replay and then its GPU fence (off by default: no gain for a game that waits for each frame's GPU work, as Xenoblade Chronicles 3 does; `[timeline]` lines show the frame) |
+| `DM_NVN_ASYNC=1` | start-up (`gfx/nvn/hle_nvn.c`) | asynchronous replay: submissions and presents run on a replay thread, syncs wait for the job's replay and then its GPU fence. Xenoblade Chronicles 3 has it in its profile (`env`): the replay (~26 ms a frame in Resolution-mode battles) overlaps the game's render thread; the window acquire then waits for every job queued so far to be replayed (`DM_NVN_ACQ_REPLAYED`), and texture registrations are seen by each job as they were when it was queued (`gfx_vk_tex.c`). Off by default; `[timeline]` lines show the frame |
+| `DM_NVN_ACQ_REPLAYED=0` | start-up (`gfx/nvn/hle_nvn.c`) | with `DM_NVN_ASYNC=1`: the window acquire does not wait for the queued jobs' replay. XC3 then drew whole-screen garbage (solid colours, smears) while the camera turned in about half of the recordings; with the wait at the next submission instead, 2 of 6 |
+| `DM_VK_X_NOPRERESET=1` | start-up (`gfx_vk_core.c`) | a submission slot's command buffers are reset as they are begun again, on the replay thread, instead of on the completion thread when its submission is done |
+| `DM_NVN_ACQ_NOW=1` | live (`gfx/nvn/hle_nvn.c`) | the window acquire's sync fenced at all work so far (the old way) instead of at the texture's last present: Xenoblade Chronicles 3 then waits for its whole frame on the GPU before it submits the next |
+| `DM_VK_X_NOBC=1` | live | every draw sets all its dynamic state and binds again (no bind cache; the cache starts empty in each command buffer and each render pass) |
 | `DM_VK_RP=0` | start-up | dynamic rendering instead of cached `VkRenderPass` objects with imageless framebuffers (Adreno's `vkCmdBeginRendering` cost about 40 µs a pass) |
 
 ## Frame pacing and modes
