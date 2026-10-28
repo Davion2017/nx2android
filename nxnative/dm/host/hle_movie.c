@@ -5,6 +5,7 @@
 #include <arm_neon.h>
 #include <mach/mach.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <unistd.h>
 #include "vpx/vpx_decoder.h"
 #include "vpx/vp8dx.h"
@@ -693,12 +694,17 @@ HLE_FORCE("_ZN5movie7Decoder24SendInputBufferForDecodeEiiilj", "movie decoder: s
 // A decoder still holding packets (AAC: their PCM in the converter; H.264: pictures in MediaCodec's pipeline) and none coming while the client asks for output: what it holds goes
 // out, one output per ask, without the end-of-stream flag (the client sent none; a packet that comes later opens the codec afresh). A client that waits for the output event (Unity) is
 // woken by a deferred one after the last packet (h_movie_SendIn), asked again until the decoder is idle long enough and once more per output
+// The game held (Android: in the background or under the pause menu) counts as no idle time: the last packet before a hold and a request after it are not a stream that stopped.
+// Without it, a DKCR opening movie sent to the background for 3 s had its AAC decoder drained and closed mid-stream on its return
+static _Atomic int g_md_held; static _Atomic uint64_t g_md_unheld_ns;
+void dm_movie_hold(int on) { if (!on) atomic_store(&g_md_unheld_ns, now_ns()); atomic_store(&g_md_held, on != 0); }
 static void md_tail(mdec_t *d) {
     if (d->type != MD_TYPE_AAC && d->type != MD_TYPE_AVC) return;
+    if (atomic_load(&g_md_held)) return;
     pthread_mutex_lock(&d->dmu); pthread_mutex_lock(&d->mu);
     int s = -1, held = d->started && !d->in_eos && !d->npend && !d->noutq && !d->avc_drain && md_held(d);
-    uint64_t idle = md_idle_ns(d);
-    if (held && now_ns() - d->in_ns <= idle) md_defer_at(d, 1, d->in_ns + idle + 50000000ull);   // too early: ask again once no packet came for long enough
+    uint64_t idle = md_idle_ns(d), from = d->in_ns > atomic_load(&g_md_unheld_ns) ? d->in_ns : atomic_load(&g_md_unheld_ns);
+    if (held && now_ns() - from <= idle) md_defer_at(d, 1, from + idle + 50000000ull);   // too early: ask again once no packet came for long enough
     else if (held) for (int k = 0; k < d->nout; k++) if (!d->out[k].used) { s = k; break; }
     if (s < 0) { pthread_mutex_unlock(&d->mu); pthread_mutex_unlock(&d->dmu); return; }
     d->out[s].used = 1; pthread_mutex_unlock(&d->mu);
