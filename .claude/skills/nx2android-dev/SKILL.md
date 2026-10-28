@@ -30,7 +30,7 @@ A fix that only one game needs today is still a core fix when it follows the sem
 - **English everywhere; log lines for something unimplemented or wrong start with `[RED] `.**
 - **Keep upstream merges easy.** Changes in `nxnative/dm/{host,gfx,tools,third_party}` stay small and platform differences go behind `__APPLE__` / `__ANDROID__` / `DM_TARGET`. Android-only code belongs in `nxnative/dm/android/`.
 - **Match the surrounding code**: its comment density, naming and dense one-line style.
-- **Tests before committing**: `python -m unittest discover tests` (includes `tests/arch_rules.py`, which enforces ARCHITECTURE.md's layer rules: no game IDs, names or packages in core code, data-only profiles, GUI only over `python -m porter`…). Commit and push only when the user asks; end commit messages with the attribution line the session gives.
+- **Tests before committing**: `python -m unittest discover tests` (includes `tests/arch_rules.py`, which enforces ARCHITECTURE.md's layer rules: no game IDs, names or packages in core code, data-only profiles, GUI only over `python -m porter`…). Commit and push only when the user asks; end commit messages with the attribution line the session gives. Messages are Conventional Commits (`fix(vk): …`, `feat(profile): …`, `docs(status): …`; README's Commit messages), checked by `.githooks/commit-msg`.
 - **Update the docs with the code**: ARCHITECTURE.md when a layer, key or stage changes; docs/PORT_STATUS.md's games table when a status changes (the only place it is kept: README links there); the profile's `android.tsv` comment header with what was tested.
 
 ## Windows environment gotchas (this PC)

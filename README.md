@@ -52,6 +52,7 @@ The APK (`NeoTheWorldEndsWithYou.apk`) and the data pack (`NeoTheWorldEndsWithYo
 - `packaging/`: the player's bundle (`python packaging/build_bundle.py`).
 - `devtools/`: scripts for bringing up a game on a connected device (`devtools/device.json` names the device: `{"serial": "...", "package": "..."}`).
 - `probes/`, `RESEARCH.md`: the feasibility study and the first on-device probes.
+- `.githooks/`: the commit-msg hook (see Commit messages).
 
 ## Building the bundle
 
@@ -67,6 +68,38 @@ python packaging/build_bundle.py
 ```
 python -m unittest discover tests
 ```
+
+## Commit messages
+
+[Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/), with commitlint's `config-conventional` types and limits:
+
+```
+<type>[(<scope>)][!]: <description>
+
+[body, after one blank line]
+
+[footers: Co-Authored-By: …, BREAKING CHANGE: <what breaks>]
+```
+
+- type: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `style` or `revert`, lower case.
+- scope: optional and free, the part touched: `vk`, `android`, `porter`, `gui`, `profile`, `status`, `release`…
+- description: no full stop at the end; it may start with a capital (game and API names). Header, body and footer lines at most 100 characters (a lone URL may run longer).
+- `!` before the `:` or a `BREAKING CHANGE:` footer marks a breaking change.
+
+```
+fix(vk): a transfer read where a run of rasterizer-discard draws ends (XC3 grass flicker)
+feat(profile): Tales of Eternia Remastered playable on update 2.0.0 (v65536)
+docs(status): bundle 8372959 ported Tales of Eternia Remastered from scratch
+chore(release): version 0.1.1
+```
+
+`.githooks/commit-msg` refuses other messages (merges, reverts and `fixup!` commits from git pass). Turn it on once per clone:
+
+```
+git config core.hooksPath .githooks
+```
+
+The commits before 2026-10-28 predate the rule.
 
 ## Updating nxnative
 
