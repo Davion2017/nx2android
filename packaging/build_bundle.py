@@ -25,6 +25,7 @@ def main():
         d = APP / f; d.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(ROOT / f, d)
     for src, dst in (('packaging/INSTALL.md', 'INSTALL.md'), ('README.md', 'README.md'), ('docs/ARCHITECTURE.md', 'docs/ARCHITECTURE.md'), ('docs/PORT_STATUS.md', 'docs/PORT_STATUS.md'), ('nxnative/LICENSE', 'LICENSE')):
         (APP / dst).parent.mkdir(parents=True, exist_ok=True); shutil.copy2(ROOT / src, APP / dst)
+    shutil.copytree(ROOT / 'docs/images', APP / 'docs/images', dirs_exist_ok=True)   # PORT_STATUS.md's screenshots
     ver = subprocess.run(['git', '-C', str(ROOT), 'describe', '--always', '--dirty'], capture_output=True, text=True).stdout.strip() or 'dev'
     (APP / 'VERSION').write_text(ver + '\n', encoding='utf-8')   # the release check (devtools/port_check.py) records it
     z = shutil.make_archive(str(DIST / f'nx2android-{ver}'), 'zip', DIST, 'nx2android')

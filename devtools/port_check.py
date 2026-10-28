@@ -1,15 +1,15 @@
-# The release check: port games with the player's bundle, as a player would, and keep each result in docs/PORT_STATUS.md.
+# The release check: port games with the player's bundle, as a player would, and keep each result in docs/RELEASE_CHECK.md.
 #   port_check.py <bundle folder> <game folder> [<game folder> …] [--home DIR] [--fresh] [--write]
 # A game folder holds the game's NSP / XCI files: hard links to the real ones are enough (mklink /H, or ln in Git Bash), so a new folder gives a port
 # from scratch without copying the game. The bundle runs with a player folder of its own (--home, default <bundle>/../home): its settings, signing key,
 # translator and downloaded tools (`nx2android.exe -m porter tools --download` there first), so nothing from the developer's machine is used.
-# --fresh deletes each folder's <title ID>_build first. --write puts each game's row in docs/PORT_STATUS.md, replacing that game's earlier row.
+# --fresh deletes each folder's <title ID>_build first. --write puts each game's row in docs/RELEASE_CHECK.md, replacing that game's earlier row.
 # Each port's events go to <game folder>/port_check.jsonl.
 import argparse, datetime, json, os, re, shutil, subprocess, sys, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-STATUS = ROOT / 'docs/PORT_STATUS.md'
+STATUS = ROOT / 'docs/RELEASE_CHECK.md'
 BEGIN, END = '<!-- port_check rows -->', '<!-- /port_check rows -->'
 
 
@@ -59,11 +59,11 @@ def write(rows):
 
 
 def main():
-    ap = argparse.ArgumentParser(description='port games with the player\'s bundle and record the results (docs/PORT_STATUS.md)')
+    ap = argparse.ArgumentParser(description='port games with the player\'s bundle and record the results (docs/RELEASE_CHECK.md)')
     ap.add_argument('bundle', help='the unzipped bundle folder (nx2android.exe in it)'); ap.add_argument('folders', nargs='+')
     ap.add_argument('--home', help='the player folder the bundle uses (default: <bundle>/../home)')
     ap.add_argument('--fresh', action='store_true', help='delete each <title ID>_build first: a port from scratch')
-    ap.add_argument('--write', action='store_true', help='put each row in docs/PORT_STATUS.md')
+    ap.add_argument('--write', action='store_true', help='put each row in docs/RELEASE_CHECK.md')
     a = ap.parse_args()
     bundle = Path(a.bundle).resolve(); exe = bundle / ('nx2android.exe' if os.name == 'nt' else 'nx2android')
     ver = (bundle / 'VERSION').read_text().strip() if (bundle / 'VERSION').is_file() else bundle.name

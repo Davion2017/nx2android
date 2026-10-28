@@ -1,64 +1,13 @@
-# Port status
+# Games
 
-Every game nx2android has a profile for: whether it plays, and whether the player's bundle ports it. This page is the only place either is kept; the profile's `status` (`playable`, `wip`, `boots`, `experimental`) and `tested` keys say the same in short.
+Tested on a Lenovo Legion Y700 (Snapdragon 8 Elite, Adreno 830). The device's GPU must read BC-compressed textures (Adreno, Xclipse; not Mali or PowerVR).
 
-## Playing
+| | |
+|:---:|:---:|
+| ![13 Sentinels: Aegis Rim](images/13-sentinels.jpg)<br>13 Sentinels: Aegis Rim<br><sub>update 1.10 · 60 fps</sub> | ![Graveyard Keeper 2](images/graveyard-keeper-2.jpg)<br>Graveyard Keeper 2<br><sub>update 1.0.4 · 60 fps (30 on Switch)</sub> |
+| ![Hades II](images/hades-ii.jpg)<br>Hades II<br><sub>update 1.0 · 60 fps</sub> | ![Mario vs. Donkey Kong](images/mario-vs-donkey-kong.jpg)<br>Mario vs. Donkey Kong<br><sub>update 1.0.1 · 60 fps</sub> |
+| ![NEO: The World Ends with You](images/neo-the-world-ends-with-you.jpg)<br>NEO: The World Ends with You<br><sub>update 1.03</sub> | ![Tales of Eternia Remastered](images/tales-of-eternia-remastered.jpg)<br>Tales of Eternia Remastered<br><sub>update 2.0.0 · 60 fps</sub> |
+| ![Unicorn Overlord](images/unicorn-overlord.jpg)<br>Unicorn Overlord<br><sub>update 1.05 · 60 fps · **boots**: saving and a full battle not tested yet</sub> | ![Unpacking](images/unpacking.jpg)<br>Unpacking<br><sub>update 2.01 · 60 fps · played by touch</sub> |
+| ![Viractal: Will You Trust Your Party?](images/viractal.jpg)<br>Viractal: Will You Trust Your Party?<br><sub>update 1.4.5</sub> | ![Xenoblade Chronicles 3](images/xenoblade-chronicles-3.jpg)<br>Xenoblade Chronicles 3<br><sub>update 2.2.0 · 30 fps · **work in progress**: some effects and models don't draw yet</sub> |
 
-Whether the port plays, on which device and game version, and what was checked. The device's GPU must read BC-compressed textures (Adreno, Xclipse; not Mali or PowerVR).
-
-| Game | Title ID | Status |
-|---|---|---|
-| 13 Sentinels: Aegis Rim | `01003FC01670C000` | playable on the Legion Y700, update 1.10: the title, a new game's prologue, the tutorial battle and the start of Juro Kurabe's story with its movie, at a held 60 fps (as on the Switch), with a 20-minute play soak (18 of 72,900 frames dropped, no memory growth beyond a new scene's) and clean sound |
-| Graveyard Keeper 2 | `0100005027A18000` | playable on the Legion Y700, update 1.0.4: at a held 60 fps (the Switch holds 30; the game's own cap is lifted), with play sessions of 34 minutes and 1 h 54 min from a save |
-| Hades II | `0100A00019DE0000` | playable on the Legion Y700, update 1.0 (v655360): the title, a new save, the Crossroads and runs in Erebus with combat, at a held 60 fps (as on the Switch) |
-| Mario vs. Donkey Kong | `0100B99019412000` | playable on the Legion Y700, update 1.0.1: the intro movie with sound, the title and World 1's levels, docked and handheld, at a held 60 fps (as on the Switch); a 35-minute play soak with no memory growth |
-| NEO: The World Ends with You | `010043B013C5C000` | playable on a Lenovo Legion Y700 (Snapdragon 8 Elite, Adreno 830), update 1.03 |
-| Tales of Eternia Remastered | `010006E0230AC000` | playable on the Legion Y700, update 2.0.0: the opening movies, the title and play by hand, at a held 60 fps (as on the Switch) |
-| Unicorn Overlord | `010069401ADB8000` | boots on the Legion Y700, update 1.05: the title, a new game's opening (skipping it too) and the prologue's battle map docked at a held 60 fps, with clean sound around the pause menu; saving and a full battle not tested yet. Needs the core of the Asian release's port (PR 5) |
-| Unpacking | `0100701015846000` | playable on the Legion Y700, update 2.01: by touch, docked and handheld, at a held 60 fps (as on the Switch) |
-| Viractal: Will You Trust Your Party? | `0100FD501F95A000` | playable on the Legion Y700 (board game turns, name entry), update 1.4.5 |
-| Xenoblade Chronicles 3 | `010074F013262000` | **work in progress**: some effects and models do not draw yet. Hundreds of its shaders are in no game file; the app captures each one the game asks for, and only the next port translates them, so until then those draws are skipped. Plays on the Legion Y700, update 2.2.0 with its DLC: the opening, battles and the story to Torchlight Hill. Holds 30 fps in Performance and Resolution mode, in the field and in battle (frame p95 under 35 ms on Everblight Plain; heavy views of Torchlight Hill took about 40 ms a frame before these fixes and are not re-measured) |
-
-## Porting with the bundle
-
-Which games the player's bundle has been checked to port, from the game files to an APK and a data pack, on a Windows PC with nothing from the developer's machine: the bundle unzipped into an empty folder, its own player folder, the tools from its **Download missing tools**, and a game folder holding only the game's NSP files.
-
-A release ships when every row of the results below has been ported by the bundle it ships.
-
-### When to run the check again
-
-| What changed | Run the check for |
-|---|---|
-| A new game profile (`nxnative/dm/games/<title ID>/` only) | that game: add its row |
-| A game's profile (its `android.tsv`, `game.tsv`, `patches.py`) | that game |
-| The core (`porter/`, `packaging/`, `nxnative/dm/{host,gfx,tools,android,third_party}`, `nxnative/scripts/`), or the NDK or .NET version | every game |
-| `gui/` or docs only | nothing (start the app once) |
-
-### How
-
-1. Build the bundle (`python packaging/build_bundle.py`) and unzip it into an empty folder, say `C:\nx2a-test\nx2android`.
-2. Once per test folder, with a player folder of its own: `set NX2A_HOME=C:\nx2a-test\home`, then `nx2android.exe -m porter tools --download` and `nx2android.exe -m porter config keys <prod.keys>`.
-3. Give each game a folder of hard links to its NSP files (`mklink /H <new> <nsp>`, or `ln` in Git Bash): a port from scratch without copying the game.
-4. `python devtools/port_check.py C:\nx2a-test\nx2android <game folder> … --fresh --write` ports each one and puts its row below, replacing that game's earlier row.
-
-### Results
-
-The v0.1.0 check (2026-10-27): bundle `7d2b374` ported four games and stopped on NEO, whose committed shader tables lacked the 20 Unity compute shaders the split reads since `386efda`. Bundle `e89aecb` differs from it only in NEO's profile tables and ported NEO. v0.1.0 differs from `e89aecb` only in documents. The v0.1.0 NEO port, installed beside the player's own as `org.nx2a.neo.test`, then played on the Legion Y700: through the DLC gifts and the opening, into free roam at Scramble Crossing with its crowd, at 40-60 fps, with no new `[RED]` lines.
-
-The v0.1.1 check (2026-10-27): bundle `bd68d8b` (v0.1.0-5-gbd68d8b) ported Hades II, the game it adds, from scratch. By the maintainer's choice only the new game was checked for this release: the Vulkan backend changes it brings (`c9c9e38`) were not run through the check for the other five games, whose rows are still from v0.1.0's bundles. v0.1.1 differs from `bd68d8b` only in documents. The release build installed on the Legion Y700 (`org.nx2a.hades2`) was ported from the development checkout at `75a1a18`, the same sources but for the version number, and starts at the title at 60 fps.
-
-The Tales of Eternia Remastered check (2026-10-27): bundle `8372959` (v0.1.1-1-g8372959) ported it, the game it adds, from scratch. The same commit makes AAudio call back every 5 ms for every game (`audiotoolbox_aaudio.c`); the other games' rows are still from earlier bundles, and only Tales of Eternia was played with that change.
-
-The v0.1.2 release (2026-10-28): by the maintainer's choice no bundle was run through the check. The maintainer instead rebuilt every game from the development checkout while testing on 2026-10-28, and these were played on the Legion Y700 that day: NEO, Hades II, Unpacking and Tales of Eternia from a fresh build folder at `21a0d68` (60 fps), Graveyard Keeper 2 at 60 fps (`21a0d68`), Mario vs. Donkey Kong (`d84dca1`). The core changes since v0.1.1 that touch every game were therefore not run through the check: the display-timed presents (`4802f3c`), the frame rate governor (`dba318d`), the node area cut on the sdk build Graveyard Keeper 2, Tales of Eternia and Viractal share (`8056043`), AAudio's 5 ms callbacks (`8372959`), the FPS counter (`27b96fc`), and the porter's Windows fixes (`e490097`, `2ee2723`). Mario vs. Donkey Kong has no row below: no bundle has ported it yet.
-
-<!-- port_check rows -->
-| Game | Title ID | Version | Result | Output | Time | Bundle | Date |
-|---|---|---|---|---|---|---|---|
-| Graveyard Keeper 2 | `0100005027A18000` | 1.0.4 | ported | APK 1 MB, data 1.4 GB, 1 DLC | 4 min (from scratch) | 7d2b374 | 2026-10-27 |
-| Hades II | `0100A00019DE0000` | 1.0.141667 | ported | APK 2 MB, data 4.7 GB | 1 min (from scratch) | v0.1.0-5-gbd68d8b | 2026-10-27 |
-| NEO: The World Ends with You | `010043B013C5C000` | 1.03 | ported | APK 2 MB, data 6.7 GB, 2 DLC | 3 min (from scratch) | e89aecb | 2026-10-27 |
-| Tales of Eternia Remastered | `010006E0230AC000` | 2.0.0 | ported | APK 2 MB, data 5.6 GB | 4 min (from scratch) | v0.1.1-1-g8372959 | 2026-10-27 |
-| Unpacking | `0100701015846000` | 2.01 | ported | APK 2 MB, data 1.0 GB | 2 min (from scratch) | 7d2b374 | 2026-10-27 |
-| Viractal | `0100FD501F95A000` | 1.4.5 | ported | APK 2 MB, data 2.3 GB | 5 min (from scratch) | 7d2b374 | 2026-10-27 |
-| Xenoblade Chronicles 3 | `010074F013262000` | 2.2.0 | ported | APK 2 MB, data 19.2 GB, 4 DLC | 4 min (from scratch) | 7d2b374 | 2026-10-27 |
-<!-- /port_check rows -->
+Which games each release has been checked to port: [RELEASE_CHECK.md](RELEASE_CHECK.md).
