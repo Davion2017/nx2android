@@ -361,7 +361,13 @@ def build_nx_extract(repo, work, logs, env):
 
 
 def swap_in(tmp, dst):   # swap the new output in as a whole (the old one is untouched on failure)
-    rmtree(dst); tmp.rename(dst)
+    rmtree(dst)
+    # Windows refuses to rename a folder while a file inside is still open, and a virus scanner opens freshly written files for a moment ("[WinError 5] Access is
+    # denied" renaming Tales of Eternia's just-extracted v65536.partial, 2026-10-28): retry for up to 15 s
+    for i in range(30 if os.name == 'nt' else 0):
+        try: tmp.rename(dst); return
+        except PermissionError: time.sleep(0.5)
+    tmp.rename(dst)
 
 
 def free_gb(p):
