@@ -111,8 +111,8 @@ static long long g_td_off = -1; static unsigned long long g_td_pool; static vkim
 void vk_texdump_note(vkimg_t *im) { if (g_td_off >= 0 && !g_td_done && !g_td_im && im && im->off == g_td_off && im->pool == g_td_pool) g_td_im = im; }
 void vk_watch(const vkimg_t *im, const char *what) {
     if (g_watch_off < 0 || !im || im->off != g_watch_off || g_watch_n <= 0) return;
-    g_watch_n--; VKLOG("watch: present %llu pass %d (%ux%u): %s %ux%u fmt %d pool %#llx+%#llx", (unsigned long long)g_tex_frame, g_sub_pass - 1, S.pass_w, S.pass_h, what, im->w, im->h, im->fmt,
-                       (unsigned long long)im->pool, (unsigned long long)im->off);
+    g_watch_n--; VKLOG("watch: present %llu pass %d (%ux%u): %s %ux%u fmt %d pool %#llx+%#llx (image %p, nvn flags %#x, %d overlapping)", (unsigned long long)g_tex_frame, g_sub_pass - 1, S.pass_w, S.pass_h, what, im->w, im->h, im->fmt,
+                       (unsigned long long)im->pool, (unsigned long long)im->off, (const void *)im, im->flags, im->novl);
 }
 static void x_read(void) { const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws = c ? atoi(c) : 128; g_sub_pass = 0;
     const char *fy = getenv("DM_VK_FLIPY"); g_flipy = !(fy && !atoi(fy));   // on unless DM_VK_FLIPY=0
@@ -1457,6 +1457,7 @@ static void copy_b2t(const p_copy_b2t *c, int to_texture) {
     VkBufferImageCopy r = {o, rowlen, imgh, sub_of(im, &c->view, c->has_view, c->r.zoffset), {c->r.xoffset, c->r.yoffset, layered ? 0 : c->r.zoffset},
                            {(uint32_t)c->r.width, (uint32_t)(c->r.height ? c->r.height : 1), layered ? 1 : (uint32_t)depth}};
     if (layered) r.imageSubresource.layerCount = (uint32_t)depth;
+    if (g_watch_off >= 0) { char w[96]; snprintf(w, sizeof w, "buffer copy %s (buffer %#llx, %dx%d)", to_texture ? "destination" : "source", (unsigned long long)c->src, c->r.width, c->r.height); vk_watch(im, w); }
     if (to_texture) { vkCmdCopyBufferToImage(cb, b, im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r); im->gpu_w = 1; }
     else { vkCmdCopyImageToBuffer(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, b, 1, &r);
         void vk_gpu_wrote(uint64_t a, uint64_t n); vkpool_t *p = vk_pool_of(c->src, 1); vk_gpu_wrote(c->src, p ? p->hi - c->src : 1); }   // (to the pool's end: the copy's extent in memory is not worked out here)
