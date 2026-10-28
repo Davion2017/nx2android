@@ -100,6 +100,7 @@ How to work a bug:
 5. **Reuse descriptor sets.** Dynamic uniform-buffer offsets took NEO from 6% reuse to 86%, plus a per-submission texture-view cache.
 6. **Frame pacing** (`perf_android.c`):
    - The governor steps 60/40/30 fps and matches the display rate. It judges p90 frame work after 4 s at a new rate, because clocks take seconds to ramp.
+   - It steps down only when frames also miss the display: at least 7 of the last 64 shown longer than 1.5 periods, read from the presentation times (`late on screen` in its log line). Work a little over the period still makes its vsync through the swapchain's queue: Viractal at 60 stepped to 40 on p90 work of 17.5 ms while it dropped 0-10 of 300 frames with the rate held. It steps back up when p90 work fits the shorter period at the current clocks (no 15% margin: at 40 the clocks drop with the slack, and Viractal's board read 15.6 ms at 40 but held 60 with 0 frames late); a step up that does not fit shows on screen and steps back down, with the next try waiting twice as long.
    - Keep the ADPF target at the game's own period.
    - Make sure frame start is recorded on every present path: NEO's governor never ran until it was.
 7. **Threads:** if hitches remain, sample per-thread cores and CPU clocks over adb (`/proc/<pid>/task/*/stat`, cpufreq). NEO's main thread sat outside the ADPF session on half-clocked mid cores while the prime cores idled; the busiest threads now join the session every 300 frames.

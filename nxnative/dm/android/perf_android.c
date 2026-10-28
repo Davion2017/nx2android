@@ -120,6 +120,20 @@ static int fps_pin(void) {   // a DM_CTL "env DM_FPS_PIN=40" line holds that ste
 // of ~24 ms GPU time, and the display's switch to 120 Hz and the missed frames made 80-550 ms frames
 static int64_t g_frame_cost;
 void dm_perf_frame_cost(int64_t ns) { g_frame_cost = ns; }
+// The frames' time on screen (hle_nvn.c, 8 presents late; ms, -1 = discarded by the system, 0 = no reading): a frame shown longer than 1.5 periods of the step,
+// or discarded, missed the display. Work over the period alone does not mean that: the swapchain holds a frame or two, so a frame a little over the period
+// still reaches its vsync. Viractal at 60 fps (FPSLocker's unlock) stepped down to 40 on p90 work of 17.5-17.7 ms while it dropped 0-10 of 300 frames on
+// screen at 60 with the rate held (DM_ADAPTIVE_FPS=0; work p50 6 ms, GPU 5-11 ms), and the player saw the counter fall into the 30s whenever the pieces moved
+static uint8_t g_late[64]; static int g_nshown; static unsigned g_held_back;
+void dm_perf_present(double iv_ms) {
+    if (iv_ms == 0) return;
+    g_late[g_nshown++ % 64] = iv_ms < 0 || iv_ms > STEPS[g_step] / 1e6 * 1.5;
+}
+static int shown_late(void) {   // of the last 64 frames on screen, how many missed the display; -1 without readings (a device that gives no present times)
+    int n = g_nshown < 64 ? g_nshown : 64, m = 0; if (n < 32) return -1;
+    for (int i = 0; i < n; i++) m += g_late[i];
+    return m * 64 / n;
+}
 static void adapt_frame(int64_t work, int64_t now) {
     // A long frame in which the replay and the GPU did next to nothing is a load (a loading screen, the game reading files on its main thread), not a frame the
     // rate could fit: it is not judged. Hades II's room changes gave ~10 frames of 28-680 ms with 0.3-0.4 ms of GPU work, the rate stepped down to 40 fps,
@@ -128,8 +142,8 @@ static void adapt_frame(int64_t work, int64_t now) {
     if (g_frame_cost > work) work = g_frame_cost;
     if (!g_adapt) return;
     g_work_hist[g_nwork++ % 64] = work;
-    { static unsigned k; if (++k % 600 == 0) LOG("[perf] adaptive frame rate: %.0f fps, frame work p50 %.1f / p90 %.1f / p95 %.1f ms (last %.1f ms)", 1e9 / STEPS[g_step], work_pct(50) / 1e6, work_pct(90) / 1e6, work_p95() / 1e6, work / 1e6); }
-    int pin = fps_pin(); if (pin >= 0) { if (g_step != pin) { g_step = pin; g_last_change = now; } return; }
+    { static unsigned k; if (++k % 600 == 0) LOG("[perf] adaptive frame rate: %.0f fps, frame work p50 %.1f / p90 %.1f / p95 %.1f ms (last %.1f ms); late on screen %d of 64, step-downs held back %u", 1e9 / STEPS[g_step], work_pct(50) / 1e6, work_pct(90) / 1e6, work_p95() / 1e6, work / 1e6, shown_late(), g_held_back); }
+    int pin = fps_pin(); if (pin >= 0) { if (g_step != pin) { g_step = pin; g_last_change = now; g_nshown = 0; } return; }
     // Judged on the 90th percentile of the last 64 frames' work, from 4 s after a change: the GPU and CPU clocks take a few seconds to rise for a shorter
     // period, and with the 95th percentile against 95% of the period NEO's crowd fell back from 40 to 30 fps within 2 s every time, though pinned at
     // 40 it held 24.4 ms frames (p90 work 24.9 ms, p95 frame time 34-36 ms: no worse than its 30 fps p95 of 35-37 ms)
@@ -137,10 +151,14 @@ static void adapt_frame(int64_t work, int64_t now) {
     int64_t p90 = work_pct(90); if (!p90) return;
     int nsteps = (int)(sizeof STEPS / sizeof *STEPS);
     if (g_step + 1 < nsteps && p90 > STEPS[g_step] * 105 / 100) {
+        // only when the frames miss the display too: at least 1 in 10 of the last 64 on screen (as the 90th percentile), or no readings to tell
+        int late = shown_late(); if (late >= 0 && late < 7) { g_held_back++; return; }
         // back down soon after a step up: the next try waits twice as long (up to a minute), so the rate does not swing between two steps
         if (g_last_up && now - g_last_up < 10000000000ll) { g_up_hold = g_up_hold * 2 > 60000000000ll ? 60000000000ll : g_up_hold * 2; }
-        g_step++; g_last_change = now; g_nwork = 0; g_ok_frames = 0; LOG("[perf] adaptive frame rate: %.0f fps (frames p90 %.1f ms)", 1e9 / STEPS[g_step], p90 / 1e6); return; }
-    if (g_step > 0 && p90 < STEPS[g_step - 1] * 85 / 100) { if (++g_ok_frames > 120 && now - g_last_change >= g_up_hold) { g_step--; g_last_change = g_last_up = now; g_nwork = 0; g_ok_frames = 0; LOG("[perf] adaptive frame rate: %.0f fps (frames p90 %.1f ms)", 1e9 / STEPS[g_step], p90 / 1e6); } }
+        g_step++; g_last_change = now; g_nwork = 0; g_nshown = 0; g_ok_frames = 0; LOG("[perf] adaptive frame rate: %.0f fps (frames p90 %.1f ms, late on screen %d of 64)", 1e9 / STEPS[g_step], p90 / 1e6, late); return; }
+    // Back up when the frames would fit the shorter period even at the clocks they get now: those clocks drop with the slack of the longer one (Viractal's board
+    // took 14-16 ms a frame at 40 fps, p90 15.6, and 10-11 ms with 0 frames late at 60). A step up that does not fit shows on screen and steps back down (above)
+    if (g_step > 0 && p90 < STEPS[g_step - 1]) { if (++g_ok_frames > 120 && now - g_last_change >= g_up_hold) { g_step--; g_last_change = g_last_up = now; g_nwork = 0; g_nshown = 0; g_ok_frames = 0; LOG("[perf] adaptive frame rate: %.0f fps (frames p90 %.1f ms)", 1e9 / STEPS[g_step], p90 / 1e6); } }
     else g_ok_frames = 0;
 }
 // hle_nvn.c, the first acquire after a present, right after its pacing wait. A frame's work is the time between two presents less that wait: what the
