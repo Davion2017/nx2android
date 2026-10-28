@@ -14,3 +14,5 @@ env	DM_NVN_ASYNC=1
 env	DM_VK_UBWC=1
 # back up to 60 fps judged on the median frame: at 40 its p90 stayed at 21-25 ms though it held 60 with 1-2 of 64 frames late
 env	DM_ADAPT_UP_PCT=50
+# the battle map draws ~2,030 of its ~3,500 draws in one pass without depth (13 ms of GPU): split every 512 draws, the GPU starts on it while the replay records the rest
+env	DM_VK_PASS_SPLIT=512
