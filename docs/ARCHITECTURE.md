@@ -60,7 +60,7 @@ Per-build knowledge stays where upstream keeps it: the rewriter's cuts in `patch
 | shaders | `shader_split.py` (the DLC's own shaders too, `aoc/` given as `DM_SPLIT_AOC`), then `shader_vk.py` (SPIR-V) with the translator built from the repository's source (`dm/gfx/tools/dmsh_xlate` over `dm/third_party/ryujinx`, once per player in their nx2android folder), plus the shaders captured on the device (below) | `shader/pkg`, `android/shaders.dmsv`, `android/captured_shaders/` |
 | host | `dm/android/build.py --release` with the player's NDK (`--debug`: a development build, debug information and `DM_CTL`) | `android/host/libdmhost.so` (`android/host-debug/`) |
 | apk | `dm/android/apk/mkapk.py`, signed with the player's own key | `<out>/<App>.apk` |
-| data | The files the app reads from `/sdcard/Android/data/<package>/files` | `<out>/<App>-data/{mods,RomFS,aoc,shaders.dmsv,env.txt,settings.txt,nx2a-data.json}` (+ `fpslock.tsv` with `--fps60`) |
+| data | The files the app reads from `/sdcard/Android/data/<package>/files` | `<out>/<App>-data/{mods,RomFS,aoc,shaders.dmsv,nintendo_ext.ttf,env.txt,settings.txt,nx2a-data.json}` (+ `fpslock.tsv` with `--fps60`); the button-icon font is made in `android/font/` |
 | install | `adb install`, the profile's `requires` checked against the device, the data pack pushed (optional) | |
 
 RomFS in the data pack is hard-linked to the extraction when the volume allows it, so it takes no extra space.
@@ -86,7 +86,7 @@ Events: with `--progress json`, every line on stdout is one JSON object, the pro
 The player gets the bundle (`dist/nx2android-<version>.zip` from `python packaging/build_bundle.py`): unzip, start `nx2android.exe`, nothing to install with pip. It does not ship toolchains; the Setup tab (`nx2android.exe -m porter doctor`, or `python -m porter doctor` from the repository) checks them and the free disk space, and its **Download missing tools** button (`porter tools --download`, `porter/fetch.py`) fetches the missing NDK, .NET SDK and platform-tools from Google's SDK repository and Microsoft's release list, checks each archive against the checksum its list gives, and unpacks them into the player's nx2android folder (`toolchains/`), which the finders search:
 - **Android NDK r27c** (`ANDROID_NDK_HOME`, the configured path, or the usual install folders). No Android SDK or JDK: `mkapk.py` writes and signs the APK itself.
 - **.NET SDK 10**: builds `nx_extract` and the shader translator, and runs them.
-- From the repository instead of the bundle: **Python 3.11+** with `requirements.txt` (`lz4`, `capstone`, `pillow`, and `PySide6` for the GUI): the port runs the engine's own Python tools (the rewriter, the shader split). The bundle carries that Python.
+- From the repository instead of the bundle: **Python 3.11+** with `requirements.txt` (`lz4`, `capstone`, `pillow`, `fonttools`, and `PySide6` for the GUI): the port runs the engine's own Python tools (the rewriter, the shader split). The bundle carries that Python.
 - **adb** (platform-tools), only to install from the tool.
 - Their own **prod.keys**. Keys and game files are never copied into the repository or the app.
 

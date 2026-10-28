@@ -3,6 +3,7 @@
 #   RomFS/         the game's files (the packed version's merged RomFS)
 #   aoc/<index>/   the DLC the player has
 #   shaders.dmsv   the Vulkan shaders (dm/android/tools/shader_vk.py)
+#   nintendo_ext.ttf  the button-icon font, the stand-in for the Nintendo extension shared font (dm/tools/make_ext_font.py; env.txt's DM_SHARED_FONT_EXT)
 #   env.txt        host switches: the game language, the DLC folder, the profile's env rows
 #   settings.txt   the pause menu's first-launch defaults (the profile's setting rows); the installer never replaces the player's own
 #   nx2a-data.json what the pack is: the game, the package, the version, the device features the profile requires (android.tsv requires), which the installer checks
@@ -35,7 +36,7 @@ def files_folder(package): return f'/sdcard/Android/data/{package}/files'
 
 def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, language='en-US', package=None, env=(), files=None, progress=None):
     """Write the pack to dst (replacing it). profile: the AndroidProfile; package: the app's, when not the profile's; env: more env.txt rows, after the profile's;
-    files: {name in the pack: source} (the 60 fps memory writes, fpslock.tsv). Returns the manifest"""
+    files: {name in the pack: source} (the 60 fps memory writes, fpslock.tsv; the button-icon font). Returns the manifest"""
     package = package or profile.package
     tmp = dst.with_name(dst.name + '.partial')
     if tmp.exists(): shutil.rmtree(tmp)

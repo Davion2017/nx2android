@@ -99,6 +99,7 @@ def checks(cfg=None, keys=None):
     if not (_importable('compression.zstd') or _importable('backports.zstd')): miss.append('backports.zstd')   # zstd: in the standard library from Python 3.14
     out.append(Check('Python modules', not miss, 'missing: ' + ', '.join(miss) if miss else 'lz4, capstone, zstd', fix='pip install ' + ' '.join(miss) if miss else ''))
     out.append(Check('Pillow', _importable('PIL'), 'the app icon from the game\'s icon' if _importable('PIL') else 'missing: the app gets no icon', required=False, fix='pip install pillow'))
+    out.append(Check('fontTools', _importable('fontTools'), 'the button icons in game text' if _importable('fontTools') else 'missing: button icons in game text draw as "?"', required=False, fix='pip install fonttools'))
     ndk, rev = find_ndk(cfg)
     if not ndk: out.append(Check('Android NDK', False, 'not found', fix=f'Download missing tools, or install NDK {NDK_RELEASE} (developer.android.com/ndk/downloads) and set its folder'))
     else: out.append(Check('Android NDK', rev == NDK_REVISION, f'{rev} at {ndk}' + ('' if rev == NDK_REVISION else f': the host is built with {NDK_RELEASE} ({NDK_REVISION}); others are untested'),

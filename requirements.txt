@@ -2,6 +2,7 @@
 lz4
 capstone
 pillow
+fonttools
 pyyaml
 backports.zstd; python_version < "3.14"
 # the GUI (python -m gui); the CLI (python -m porter) runs without it

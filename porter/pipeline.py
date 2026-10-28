@@ -13,6 +13,9 @@ from porter.paths import DM, NXNATIVE
 from porter.upstream import BuildError, PROG, android_profile, game, nacp, nsp, profile_guess, say
 
 PY = sys.executable
+# The letters of the button-icon font (make_ext_font.py knocks them out of the icons): a bold system font of the machine that ports, never shipped in the repository
+LETTER_FONTS = [f'{os.environ.get("WINDIR", "C:/Windows")}/Fonts/{f}' for f in ('ARLRDBD.TTF', 'arialbd.ttf')] + [
+    '/System/Library/Fonts/Supplemental/Arial Rounded Bold.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', '/usr/share/fonts/TTF/DejaVuSans-Bold.ttf']
 
 
 @dataclass
@@ -356,12 +359,31 @@ class Port:
 
     # ---- data: the files the app reads from its files folder ----
     def data(self):
-        PROG.stage('data pack', step='linking')
+        PROG.stage('data pack', step='button-icon font')
+        font_env, font_files = self.button_font()
         dst = self.o.out / f'{app_stem(self.g, self.app_name)}-data'
         man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched, romfs=self.game / 'RomFS', shaders=self.dmsv,
-                             aoc=self.aoc, language=self.lang, package=self.package, env=self.fps_env, files=self.fps_files, progress=lambda what: PROG.set(step=f'linking {what}'))
+                             aoc=self.aoc, language=self.lang, package=self.package, env=self.fps_env + font_env, files={**self.fps_files, **font_files},
+                             progress=lambda what: PROG.set(step=f'linking {what}'))
         self.data_path = dst; self.result['data'] = str(dst)
         PROG.end(f'{man["files"]:,} files, {man["bytes"] / 2**30:.1f} GB')
+
+    def button_font(self):
+        """The stand-in for the system's Nintendo extension shared font: the controller-button icons in game text (U+E0E0 = A; Super Mario Bros. Wonder's menus showed '?' without it), which
+        the host serves for shared-font type 5 (hle_sdk16.c, DM_SHARED_FONT_EXT). make_ext_font.py draws it, as the Mac and iOS builds do, made again when the tool or the letters change.
+        Returns (env.txt rows, pack files); none without fontTools or a letter font, and the icons draw as '?'"""
+        letters = next((Path(p) for p in LETTER_FONTS if Path(p).is_file()), None)
+        try: import fontTools   # noqa: F401 (make_ext_font.py runs with this Python)
+        except ImportError: letters, why = None, 'no fontTools (pip install fonttools)'
+        else: why = 'no bold system font for the letters'
+        if not letters: say(f'[RED] {why}: the button icons in the game\'s text draw as "?"'); return [], {}
+        d = self.aw / 'font'; ttf, kf = d / 'nintendo_ext.ttf', d / 'nintendo_ext.key'
+        key = nsp.fingerprint(('files', [DM / 'tools/make_ext_font.py', letters]))
+        if not (ttf.is_file() and nsp.reused(kf, key) is not None):
+            nsp.rmtree(kf); d.mkdir(parents=True, exist_ok=True)
+            nsp.run([PY, DM / 'tools/make_ext_font.py', ttf, letters], self.logs / 'make_ext_font.log', env=self.env)
+            kf.write_text(f'{key}\n')
+        return [f'DM_SHARED_FONT_EXT={datapack.files_folder(self.package)}/nintendo_ext.ttf'], {'nintendo_ext.ttf': ttf}
 
     # ---- install (optional) ----
     def install(self):

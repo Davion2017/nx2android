@@ -84,6 +84,23 @@ class DataPack(unittest.TestCase):
         finally:
             shutil.rmtree(t, ignore_errors=True)
 
+    @unittest.skipUnless(any(Path(p).is_file() for p in pipeline.LETTER_FONTS), 'no letter font on this machine')
+    def test_button_font(self):   # the Nintendo extension stand-in: made once, in the pack, named in env.txt (Super Mario Bros. Wonder's "Press L+R" drew '?' without it)
+        try: from fontTools.ttLib import TTFont
+        except ImportError: self.skipTest('no fontTools')
+        from types import SimpleNamespace
+        t = Path(tempfile.mkdtemp(prefix='nx2a_test_font_'))
+        try:
+            port = SimpleNamespace(aw=t / 'android', logs=t / 'logs', env=dict(os.environ, PYTHONUTF8='1'), package='org.nx2a.test')
+            env, files = pipeline.Port.button_font(port)
+            self.assertEqual(env, ['DM_SHARED_FONT_EXT=/sdcard/Android/data/org.nx2a.test/files/nintendo_ext.ttf']); self.assertEqual(list(files), ['nintendo_ext.ttf'])
+            cmap = TTFont(files['nintendo_ext.ttf']).getBestCmap()
+            self.assertTrue({0xE0E0, 0xE0E1, 0xE0E4, 0xE0E5, 0xE0EF, 0xE100} <= set(cmap))   # A, B, L, R, +, stick
+            made = files['nintendo_ext.ttf'].stat().st_mtime_ns
+            self.assertEqual(pipeline.Port.button_font(port)[1]['nintendo_ext.ttf'].stat().st_mtime_ns, made)   # reused while the tool and the letters are unchanged
+        finally:
+            shutil.rmtree(t, ignore_errors=True)
+
 
 class Experimental(unittest.TestCase):
     def test_ios_profile_copied_with_experimental_android_tsv(self):   # an iOS-only profile is copied out of the repository, never edited in place
