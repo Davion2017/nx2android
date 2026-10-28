@@ -10,3 +10,7 @@ env	DM_VK_ZEROCOPY_MAX_MB=512
 setting	docked=0
 # the replay on its own thread: in battle it took 17.5 ms of the game thread's 33 ms a frame (about 3,000 draws), which held the adaptive rate at 30 fps
 env	DM_NVN_ASYNC=1
+# colour render targets keep Adreno's UBWC compression: the opening's GPU time 35-40% lower (14 to 8-9 ms at about 550 draws)
+env	DM_VK_UBWC=1
+# back up to 60 fps judged on the median frame: at 40 its p90 stayed at 21-25 ms though it held 60 with 1-2 of 64 frames late
+env	DM_ADAPT_UP_PCT=50
