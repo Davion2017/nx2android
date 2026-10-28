@@ -98,6 +98,7 @@ struct vkimg {
     uint64_t depth_sub;   // the submission (gfx_vk_exec.c g_set_epoch) whose passes last used it as their depth attachment
     uint64_t depth_cut;   // and the command buffer within it (gfx_vk_exec.c g_cuts)
     int fixed_fmt;   // created with a format list (DM_VK_UBWC): views only in its format or its sRGB twin
+    VkFormat fmt2;   // with fixed_fmt: the other format of its list (its sRGB twin), VK_FORMAT_UNDEFINED when the list is its format alone
     VkImageView full;               // a view of the whole image as created
     VkBufferView tbuf;              // buffer textures: a texel buffer view of the pool
     uint64_t last_use;              // submission fence of the last use

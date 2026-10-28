@@ -174,7 +174,7 @@ static VkRenderingAttachmentInfo P_ca[8], P_da, P_sa; static VkRenderingInfo P_r
 // then begin with vkCmdBeginRenderPass (the battle's replay went from about 20 to 17.5 ms a frame). Pipelines are made against a compatible render pass (the same
 // formats, every load operation LOAD). DM_VK_RP=0 (start-up): dynamic rendering
 typedef struct { uint32_t ncol, cfmt[8], cload[8], dfmt, dload, sload, dstore, samples; } rpkey;
-typedef struct { VkRenderPass rp; uint32_t w, h, layers, n; struct { uint32_t usage, flags, w, h, layers, fmt; } a[9]; } fbkey;
+typedef struct { VkRenderPass rp; uint32_t w, h, layers, n; struct { uint32_t usage, flags, w, h, layers, fmt, fmt2; } a[9]; } fbkey;   // fmt2: a format-listed image's second format (an imageless framebuffer names the image's whole list)
 static nvn_hmap g_rps = {.klen = sizeof(rpkey)}, g_fbs = {.klen = sizeof(fbkey)}; static pthread_mutex_t g_rp_mu = PTHREAD_MUTEX_INITIALIZER;
 // Without dynamic rendering (a Vulkan 1.1 / 1.2 device, V.has_dynrender) passes must be render pass objects, whatever DM_VK_RP says
 static int rp_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_VK_RP"); on = V.has_imageless && (!V.has_dynrender || !(e && !atoi(e))); VKLOG("passes: %s", on ? "render pass objects with imageless framebuffers" : "dynamic rendering"); } return on; }
@@ -210,9 +210,9 @@ static VkRenderPass rp_compat(uint32_t ncol, const uint32_t *cfmt, uint32_t dfmt
 static VkFramebuffer fb_get(const fbkey *k) {
     pthread_mutex_lock(&g_rp_mu); VkFramebuffer fb = nvn_hm_get(&g_fbs, k);
     if (!fb) {
-        VkFramebufferAttachmentImageInfo ai[9]; VkFormat vf[9];
-        for (uint32_t i = 0; i < k->n; i++) { vf[i] = (VkFormat)k->a[i].fmt;
-            ai[i] = (VkFramebufferAttachmentImageInfo){VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENT_IMAGE_INFO, NULL, k->a[i].flags, k->a[i].usage, k->a[i].w, k->a[i].h, k->a[i].layers, 1, &vf[i]}; }
+        VkFramebufferAttachmentImageInfo ai[9]; VkFormat vf[9][2];
+        for (uint32_t i = 0; i < k->n; i++) { vf[i][0] = (VkFormat)k->a[i].fmt; vf[i][1] = (VkFormat)k->a[i].fmt2;
+            ai[i] = (VkFramebufferAttachmentImageInfo){VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENT_IMAGE_INFO, NULL, k->a[i].flags, k->a[i].usage, k->a[i].w, k->a[i].h, k->a[i].layers, k->a[i].fmt2 ? 2u : 1u, vf[i]}; }
         VkFramebufferAttachmentsCreateInfo aci = {VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENTS_CREATE_INFO, NULL, k->n, ai};
         VkFramebufferCreateInfo ci = {VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, &aci, VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT, k->rp, k->n, NULL, k->w, k->h, k->layers};
         if (vkCreateFramebuffer(V.dev, &ci, NULL, &fb)) { VKRED_ONCE(71, "vkCreateFramebuffer failed"); fb = VK_NULL_HANDLE; } else nvn_hm_put(&g_fbs, k, fb);
@@ -259,7 +259,8 @@ static void pass_commit(void) {
         fbkey fk; memset(&fk, 0, sizeof fk); VkImageView views[9]; VkClearValue cv[9]; uint32_t na = 0;
         for (uint32_t i = 0; i < k.ncol; i++) if (P_ca[i].imageView) {
             k.cfmt[i] = P_att[i].fmt; k.cload[i] = P_ca[i].loadOp; cv[na] = P_ca[i].clearValue; views[na] = P_ca[i].imageView;
-            fk.a[na].usage = P_att[i].im->usage; fk.a[na].flags = P_att[i].im->cflags; fk.a[na].w = P_att[i].w; fk.a[na].h = P_att[i].h; fk.a[na].layers = P_att[i].layers; fk.a[na].fmt = P_att[i].fmt; na++; }
+            fk.a[na].usage = P_att[i].im->usage; fk.a[na].flags = P_att[i].im->cflags; fk.a[na].w = P_att[i].w; fk.a[na].h = P_att[i].h; fk.a[na].layers = P_att[i].layers;
+            fk.a[na].fmt = P_att[i].im->fmt2 ? (uint32_t)P_att[i].im->fmt : P_att[i].fmt; fk.a[na].fmt2 = (uint32_t)P_att[i].im->fmt2; na++; }   // (a format-listed image (DM_VK_UBWC): its whole list, as imageless framebuffers require)
         if (P_ri.pDepthAttachment || P_ri.pStencilAttachment) {
             k.dfmt = P_att[8].fmt; k.dload = P_da.loadOp; k.sload = P_sa.imageView ? P_sa.loadOp : VK_ATTACHMENT_LOAD_OP_DONT_CARE; k.dstore = P_da.storeOp;
             cv[na] = P_da.loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR ? P_da.clearValue : P_sa.clearValue; if (P_sa.loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR) cv[na].depthStencil.stencil = P_sa.clearValue.depthStencil.stencil;
