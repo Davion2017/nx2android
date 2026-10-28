@@ -9,6 +9,7 @@
 #define _GNU_SOURCE
 #include "gfx_vk.h"
 #include "nvn_hmap.h"
+#include "nvn_dirty.h"
 #include <android/hardware_buffer.h>
 #include <dlfcn.h>
 #include <errno.h>
@@ -290,15 +291,41 @@ int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     if (buf) *buf = (void *)(uintptr_t)p->lo; if (off) *off = addr - p->lo; return 1;
 }
 void mtl_alias_drop_pool(const void *pool) { void vk_tex_drop_pool(const void *); vk_tex_drop_pool(pool); }
-void vk_pools_sync(VkCommandBuffer cb) {   // copied pools: the guest's bytes into the GPU copy (the CPU writes it while the GPU is idle on it: the slot ring waited)
-    (void)cb;
+// The NVN flags of the pool at mem (hle_nvn.c, after mtl_pool_add): a copied pool the CPU maps uncached (CPU_UNCACHED, 0x2) is one the game writes and the GPU reads;
+// the game reads GPU results from cached memory, so such a pool is not copied back after each submission
+void vk_pool_set_flags(const void *mem, int flags) {
     pthread_rwlock_rdlock(&g_pool_mu);
-    for (int i = 0; i < g_npool; i++) if (g_pool[i].shadow) memcpy(g_pool[i].shadow, (const void *)(uintptr_t)g_pool[i].lo, g_pool[i].hi - g_pool[i].lo);
+    for (int i = g_npool - 1; i >= 0; i--) if (g_pool[i].lo == (uint64_t)(uintptr_t)mem) { g_pool[i].flags = flags; break; }
     pthread_rwlock_unlock(&g_pool_mu);
 }
-static void pools_copy_back(void) {   // copied pools after a submission: what the GPU wrote back into the guest's pages
+static uint64_t g_sync_bytes, g_sync_full;   // copied pools: bytes copied by the incremental sync, full copies
+// Copied pools: the guest's bytes into the GPU copy. The first sync copies the whole pool; later ones copy only the 64 KB blocks with pages the CPU wrote since the last
+// sync (nvn_dirty's write-protect tracking: a block is protected again before it is copied, so a write during the copy is caught by the next sync). An 860 MB
+// pool copied whole at every submission (Unicorn Overlord on a Legion Y700 2023) ran at a few frames a second
+void vk_pools_sync(VkCommandBuffer cb) {
+    (void)cb;
+    enum { BLK = 64 << 10 };
     pthread_rwlock_rdlock(&g_pool_mu);
-    for (int i = 0; i < g_npool; i++) if (g_pool[i].shadow) memcpy((void *)(uintptr_t)g_pool[i].lo, g_pool[i].shadow, g_pool[i].hi - g_pool[i].lo);
+    for (int i = 0; i < g_npool; i++) {
+        vkpool_t *p = &g_pool[i]; if (!p->shadow) continue;
+        uint8_t *lo = (uint8_t *)(uintptr_t)p->lo; uint64_t size = p->hi - p->lo, st = nvn_dirty_now();
+        if (!p->span) p->span = nvn_dirty_span(lo, size);
+        if (!p->synced || !p->span) {   // untracked: every sync copies all of it, as before
+            if (p->span) nvn_dirty_protect(lo, size);
+            memcpy(p->shadow, lo, size); g_sync_bytes += size; g_sync_full++; p->synced = 1; p->stamp = st; continue; }
+        for (uint64_t off = 0; off < size; off += BLK) {
+            uint64_t n = size - off < BLK ? size - off : BLK;
+            if (!nvn_dirty_since_span(p->span, lo + off, n, p->stamp)) continue;
+            nvn_dirty_protect(lo + off, n); memcpy(p->shadow + off, lo + off, n); g_sync_bytes += n;
+        }
+        p->stamp = st;
+    }
+    pthread_rwlock_unlock(&g_pool_mu);
+    static uint64_t n, last; if (++n % 600 == 0) { VKLOG("copied pools: %.1f MB synced in the last 600 submissions (%.2f MB each), %llu full copies so far", (g_sync_bytes - last) / 1048576.0, (g_sync_bytes - last) / 600.0 / 1048576.0, (unsigned long long)g_sync_full); last = g_sync_bytes; }
+}
+static void pools_copy_back(void) {   // copied pools after a submission: what the GPU wrote back into the guest's pages (not for CPU-uncached pools, see vk_pool_set_flags)
+    pthread_rwlock_rdlock(&g_pool_mu);
+    for (int i = 0; i < g_npool; i++) if (g_pool[i].shadow && !(g_pool[i].flags & 0x2)) memcpy((void *)(uintptr_t)g_pool[i].lo, g_pool[i].shadow, g_pool[i].hi - g_pool[i].lo);
     pthread_rwlock_unlock(&g_pool_mu);
 }
 
