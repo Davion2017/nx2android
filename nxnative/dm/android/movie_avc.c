@@ -22,14 +22,18 @@ struct mavc {
     struct { uint8_t *nv12; int w, h; int64_t pts; } q[QMAX]; int nq;
     uint8_t *au; size_t aucap;   // Annex B copy of the access unit being decoded
     int red, rgba;               // rgba: pictures as 4-byte RGBA (native texture mode) instead of NV12
+    // The codec's timestamps: the game's while they increase, else the last one + 1 µs, each mapped back to the game's on output (pmap). 13 Sentinels: Aegis Rim sends every
+    // packet of its 1024x576 movies with time 0, and c2.qti.avc.decoder gave no picture for 81 packets and then took no more input. With made-up timestamps the codec's
+    // own output order stands (synth: the queue is not sorted)
+    int64_t last_in; int synth; struct { int64_t c, g; } pmap[64]; int npmap;
 };
 
-mavc *mavc_new(void) { mavc *a = calloc(1, sizeof *a); if (!a) die("movie: AVC decoder allocation failed"); return a; }
-static void close_codec(mavc *a) { if (a->mc) { AMediaCodec_stop(a->mc); AMediaCodec_delete(a->mc); a->mc = NULL; } a->nin = a->nout = 0; a->eos_sent = 0; }
+mavc *mavc_new(void) { mavc *a = calloc(1, sizeof *a); if (!a) die("movie: AVC decoder allocation failed"); a->last_in = INT64_MIN; return a; }
+static void close_codec(mavc *a) { if (a->mc) { AMediaCodec_stop(a->mc); AMediaCodec_delete(a->mc); a->mc = NULL; } a->nin = a->nout = 0; a->eos_sent = 0; a->last_in = INT64_MIN; a->npmap = 0; }
 void mavc_drop(mavc *a) {
     for (int i = 0; i < a->nq; i++) free(a->q[i].nv12);
     a->nq = 0;
-    if (a->mc) { AMediaCodec_flush(a->mc); a->nin = a->nout = 0; a->eos_sent = 0; }   // a seek: pictures in the codec belong to the old position
+    if (a->mc) { AMediaCodec_flush(a->mc); a->nin = a->nout = 0; a->eos_sent = 0; a->last_in = INT64_MIN; a->npmap = 0; }   // a seek: pictures in the codec belong to the old position
 }
 void mavc_free(mavc *a) { if (!a) return; mavc_drop(a); close_codec(a); free(a->au); free(a); }
 int mavc_queued(const mavc *a) { return a->nq; }
@@ -121,7 +125,8 @@ static void keep_picture(mavc *a, const uint8_t *src, size_t n, int64_t pts) {
         }
     } else for (int r = 0; r < h / 2; r++) memcpy(ouv + (size_t)r * w, src + uvoff + (size_t)(a->ct / 2 + r) * s + (a->cl & ~1), (size_t)w);
     if (a->nq == QMAX) { if (!a->red++) LOG("[RED] movie: AVC picture queue full, dropping the oldest picture"); free(a->q[0].nv12); memmove(a->q, a->q + 1, --a->nq * sizeof a->q[0]); }
-    int k = a->nq; while (k > 0 && a->q[k - 1].pts > pts) { a->q[k] = a->q[k - 1]; k--; }
+    for (int m = 0; m < a->npmap; m++) if (a->pmap[m].c == pts) { pts = a->pmap[m].g; a->pmap[m] = a->pmap[--a->npmap]; break; }   // the game's own timestamp
+    int k = a->nq; while (!a->synth && k > 0 && a->q[k - 1].pts > pts) { a->q[k] = a->q[k - 1]; k--; }
     a->q[k].nv12 = o; a->q[k].w = w; a->q[k].h = h; a->q[k].pts = pts; a->nq++;
 }
 // collect the pictures the codec has ready, waiting up to wait_us for the first; 1 = the end-of-stream output came
@@ -160,11 +165,14 @@ int mavc_decode(mavc *a, const uint8_t *p, int n, int64_t pts_us) {
     if (!c.len) return 0;
     if ((a->dirty || !a->mc || a->eos_sent) && !open_codec(a)) return -1;
     ssize_t i = input_slot(a);
-    if (i < 0) { if (!a->red++) LOG("[RED] movie: MediaCodec AVC decoder has no free input buffer, a packet is dropped (first case)"); return -1; }
+    if (i < 0) { static long nd; long k = ++nd; if (!(k & (k - 1))) LOG("[RED] movie: MediaCodec AVC decoder has no free input buffer, a packet is dropped (%ld so far)", k); return -1; }
     size_t cap = 0; uint8_t *b = AMediaCodec_getInputBuffer(a->mc, (size_t)i, &cap);
     if (!b || cap < c.len) { if (!a->red++) LOG("[RED] movie: AVC access unit of %zu bytes does not fit MediaCodec's %zu-byte input buffer", c.len, cap); AMediaCodec_queueInputBuffer(a->mc, (size_t)i, 0, 0, (uint64_t)pts_us, 0); return -1; }
     memcpy(b, a->au, c.len);
-    if (AMediaCodec_queueInputBuffer(a->mc, (size_t)i, 0, c.len, (uint64_t)pts_us, 0) != AMEDIA_OK) { if (!a->red++) LOG("[RED] movie: MediaCodec refused an AVC access unit (first case)"); return -1; }
+    int64_t cpts = pts_us > a->last_in ? pts_us : a->last_in + 1; if (cpts != pts_us) a->synth = 1; a->last_in = cpts;
+    if (a->npmap == 64) a->pmap[0] = a->pmap[--a->npmap];   // (outputs the codec never gave)
+    a->pmap[a->npmap].c = cpts; a->pmap[a->npmap].g = pts_us; a->npmap++;
+    if (AMediaCodec_queueInputBuffer(a->mc, (size_t)i, 0, c.len, (uint64_t)cpts, 0) != AMEDIA_OK) { if (!a->red++) LOG("[RED] movie: MediaCodec refused an AVC access unit (first case)"); return -1; }
     a->nin++;
     drain(a, 0);
     return 0;

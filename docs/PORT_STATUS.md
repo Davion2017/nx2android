@@ -8,6 +8,7 @@ Whether the port plays, on which device and game version, and what was checked. 
 
 | Game | Title ID | Status |
 |---|---|---|
+| 13 Sentinels: Aegis Rim | `01003FC01670C000` | playable on the Legion Y700, update 1.10: the title, a new game's prologue, the tutorial battle and the start of Juro Kurabe's story with its movie, at a held 60 fps (as on the Switch), with a 20-minute play soak (18 of 72,900 frames dropped, no memory growth beyond a new scene's) and clean sound |
 | Graveyard Keeper 2 | `0100005027A18000` | playable on the Legion Y700, update 1.0.4: at a held 60 fps (the Switch holds 30; the game's own cap is lifted), with play sessions of 34 minutes and 1 h 54 min from a save |
 | Hades II | `0100A00019DE0000` | playable on the Legion Y700, update 1.0 (v655360): the title, a new save, the Crossroads and runs in Erebus with combat, at a held 60 fps (as on the Switch) |
 | Mario vs. Donkey Kong | `0100B99019412000` | playable on the Legion Y700, update 1.0.1: the intro movie with sound, the title and World 1's levels, docked and handheld, at a held 60 fps (as on the Switch); a 35-minute play soak with no memory growth |
