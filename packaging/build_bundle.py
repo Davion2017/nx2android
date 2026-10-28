@@ -1,6 +1,7 @@
 # Build the player's bundle: dist/nx2android/ with nx2android.exe (the app, and the Python the pipeline runs the engine's tools with), the committed
 # nxnative/ tree beside it (the engine the port builds from), and the install guide. Zipped as dist/nx2android-<version>.zip.
-#   python packaging/build_bundle.py      (with PySide6 and PyInstaller installed: pip install -r requirements.txt pyinstaller)
+#   python packaging/build_bundle.py      (with PySide6 and PyInstaller installed: pip install -r requirements.txt pyinstaller, and PyInstaller's bootloader
+#                                          compiled on this PC: python packaging/build_bootloader.py)
 # The bundle holds no toolchain: the Setup tab downloads NDK r27c, the .NET SDK 10 and platform-tools from their makers, or the player installs them (packaging/INSTALL.md).
 import shutil, subprocess, sys
 from pathlib import Path
@@ -15,6 +16,9 @@ def tracked(prefix):
 
 
 def main():
+    sys.path.insert(0, str(ROOT / 'packaging'))
+    import build_bootloader
+    if not build_bootloader.is_local(): sys.exit('PyInstaller has its prebuilt bootloader, which antivirus engines flag: run python packaging/build_bootloader.py first')
     subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--distpath', str(DIST), '--workpath', str(WORK), str(ROOT / 'packaging/nx2android.spec')], check=True)
     files = tracked('nxnative')   # the committed engine and profiles only: no local builds, keys or game files
     for f in files:

@@ -100,7 +100,7 @@ nx2android/
   porter/                port pipeline (python -m porter)
   gui/                   desktop app (python -m gui)
   devtools/              device bring-up scripts
-  packaging/             the player's bundle: build_bundle.py, nx2android.spec, nx2android.py, INSTALL.md
+  packaging/             the player's bundle: build_bundle.py, build_bootloader.py, nx2android.spec, nx2android.py, INSTALL.md
   tests/                 unit tests (python -m unittest discover tests); arch_rules.py checks this file's layer rules
   requirements.txt       the Python modules the tool needs
   probes/                first on-device probes (research)
