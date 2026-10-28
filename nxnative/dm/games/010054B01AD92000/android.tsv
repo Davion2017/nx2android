@@ -16,3 +16,5 @@ env	DM_VK_UBWC=1
 env	DM_ADAPT_UP_PCT=50
 # the battle map draws ~2,030 of its ~3,500 draws in one pass without depth (13 ms of GPU): split every 512 draws, the GPU starts on it while the replay records the rest
 env	DM_VK_PASS_SPLIT=512
+# the replay thread on the prime core: the battle map's replay 12.5 to 10.0 ms a frame (all big cores: no change)
+env	DM_PIN_REPLAY=prime
