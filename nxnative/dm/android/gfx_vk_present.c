@@ -31,7 +31,9 @@ __attribute__((weak)) int dm_menu_state(void) { return -1; }
 __attribute__((weak)) int dm_overlay_fps(void) { return 0; }   // front_android.c: the pause menu's Show FPS
 __attribute__((weak)) void dm_overlay_menu_xy(float *x, float *y) { *x = *y = 0; for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_MENU) { *x = OV_CTLS[i].x; *y = OV_CTLS[i].y; } }
 __attribute__((weak)) int dm_text_entry(char *title, int tcap, char *text, int xcap, int *sel, int *shift) { (void)title; (void)tcap; (void)text; (void)xcap; (void)sel; (void)shift; return 0; }
+static void pace_reset(void);
 static void swap_destroy(void) {
+    pace_reset();
     if (g_swap) { vkDeviceWaitIdle(V.dev); for (uint32_t i = 0; i < g_nsimg; i++) if (g_sview[i]) { vkDestroyImageView(V.dev, g_sview[i], NULL); g_sview[i] = VK_NULL_HANDLE; }
                   vkDestroySwapchainKHR(V.dev, g_swap, NULL); g_swap = VK_NULL_HANDLE; }
     if (g_surf) { vkDestroySurfaceKHR(V.inst, g_surf, NULL); g_surf = VK_NULL_HANDLE; }
@@ -396,7 +398,49 @@ static int overlay_ready(VkCommandBuffer cb, uint32_t k, int menu) {   // k: thi
     }
     return 1;
 }
-static void present_window(vkimg_t *im, const int crop[4]) {
+// ---- frame pacing on the display (VK_GOOGLE_display_timing) ----
+// Without a time of its own a frame goes on screen at the first vsync after it is latched. Mario vs. Donkey Kong at 60 fps on the Legion Y700's 120 Hz panel was ready about
+// 4.6 ms before that latch (SurfaceFlinger's latency: 12.9 ms from ready to shown, GPU 9.5-10.5 ms a frame), and about one frame in ten missed it by a millisecond or so: shown
+// for three vsyncs, the next one for one (11 of 125 frames each way, a visible stutter; Hades II's title, ready far earlier, showed every frame for two). Each frame now gets a
+// desired present time: the last one's plus the game's period, on the display's vsync grid (anchored at a past frame's actual present time), half a vsync before that vsync so
+// it cannot go out early. A frame that would not be ready in time moves the cadence to the first vsync it can make (a "resync": one longer frame, and from then on a vsync of
+// slack). The pause menu's redraws carry no time. DM_VK_PACE=0 (live) presents without times
+static uint64_t g_refresh_ns, g_pace_target, g_pace_anchor, g_pace_n, g_pace_resync, g_pace_slip; static uint32_t g_pace_id; static int g_pace_on = 1;
+static uint64_t mono_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; }
+static void pace_reset(void) { g_pace_target = g_pace_anchor = g_refresh_ns = 0; }
+static uint64_t pace_snap(uint64_t t) {   // the first vsync at or after t on the grid through the anchor
+    uint64_t r = g_refresh_ns, a = g_pace_anchor;
+    if (t <= a) return a - (a - t) / r * r;
+    return a + (t - a + r - 1) / r * r;
+}
+static uint64_t pace_desired(double period) {   // the frame's desired present time (0 = none)
+    if (!V.has_dtiming || !g_swap) return 0;
+    if (g_pace_n % 30 == 0) { const char *e = getenv("DM_VK_PACE"); g_pace_on = !(e && !atoi(e)); }
+    if (!g_refresh_ns || g_pace_n % 120 == 0) {
+        VkRefreshCycleDurationGOOGLE rc; uint64_t was = g_refresh_ns;
+        if (vkGetRefreshCycleDurationGOOGLE(V.dev, g_swap, &rc) == VK_SUCCESS && rc.refreshDuration > 1000000) g_refresh_ns = rc.refreshDuration;
+        if (g_refresh_ns && g_refresh_ns != was) { VKLOG("[perf] display timing: refresh %.3f ms", g_refresh_ns / 1e6); g_pace_target = 0; }
+    }
+    VkPastPresentationTimingGOOGLE pt[16]; uint32_t np = 16;
+    if (vkGetPastPresentationTimingGOOGLE(V.dev, g_swap, &np, pt) >= 0)
+        for (uint32_t i = 0; i < np; i++) {
+            if (pt[i].actualPresentTime > g_pace_anchor) g_pace_anchor = pt[i].actualPresentTime;
+            if (pt[i].desiredPresentTime && pt[i].actualPresentTime > pt[i].desiredPresentTime + g_refresh_ns) g_pace_slip++;   // went out a vsync or more after its own
+        }
+    g_pace_n++;
+    if (g_pace_n % 600 == 0) VKLOG("[perf] display timing: %llu frames, %llu resyncs, %llu shown a vsync or more after their time (cumulative)%s",
+                                   (unsigned long long)g_pace_n, (unsigned long long)g_pace_resync, (unsigned long long)g_pace_slip, g_pace_on ? "" : "; off (DM_VK_PACE=0)");
+    if (!g_pace_on || !g_refresh_ns || !g_pace_anchor || period <= 0) { g_pace_target = 0; return 0; }
+    // The earliest vsync this frame can make: its GPU work (submitted just before), the blit, then the latch a vsync before it is shown. When the cadence's next vsync is
+    // earlier, the cadence restarts half a vsync further out than that, so the next frames have room for the jitter: restarting at the earliest itself made 31 long frames
+    // in 4,200 (5 shown late), and going on until the target was under a vsync away made 54 in 3,600 go out late
+    double vk_gpu_ms_recent(void); double g = vk_gpu_ms_recent(); uint64_t gpu = (uint64_t)((g > 4 ? g : 4) * 1e6) + 3000000;
+    uint64_t now = mono_ns(), t = g_pace_target ? pace_snap(g_pace_target + (uint64_t)(period * 1e9) - g_refresh_ns / 2) : 0;
+    if (t < now + gpu + g_refresh_ns) { if (g_pace_target) g_pace_resync++; t = pace_snap(now + gpu + g_refresh_ns * 3 / 2); }
+    g_pace_target = t;
+    return t - g_refresh_ns / 2;
+}
+static void present_window(vkimg_t *im, const int crop[4], double period) {   // period: the game's frame period (s); < 0 for a redraw of the last frame (no time)
     uint32_t k = g_pi++ % 8;
     vkWaitForFences(V.dev, 1, &g_pfence[k], 1, UINT64_MAX);
     uint32_t idx; VkResult r = vkAcquireNextImageKHR(V.dev, g_swap, UINT64_MAX, g_acq[k], VK_NULL_HANDLE, &idx);
@@ -436,6 +480,9 @@ static void present_window(vkimg_t *im, const int crop[4]) {
     pthread_mutex_lock(&g_vk_queue_mu);
     if (vkQueueSubmit(V.q, 1, &si, g_pfence[k])) { pthread_mutex_unlock(&g_vk_queue_mu); VKRED_ONCE(91, "present submit failed"); return; }
     VkPresentInfoKHR pi = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, NULL, 1, &g_done_sem[k], 1, &g_swap, &idx, NULL};
+    VkPresentTimeGOOGLE ptm = {++g_pace_id, period >= 0 ? pace_desired(period) : 0};
+    VkPresentTimesInfoGOOGLE pti = {VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, NULL, 1, &ptm};
+    if (V.has_dtiming) pi.pNext = &pti;
     r = vkQueuePresentKHR(V.q, &pi);
     pthread_mutex_unlock(&g_vk_queue_mu);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) swap_destroy();
@@ -476,7 +523,7 @@ void vk_window_lost(void) { pthread_mutex_lock(&g_present_mu); swap_destroy(); g
 // swapchain's fences (a FIFO swapchain blocks there until a vsync); the window texture is not drawn again before its blit, because NVN's acquire waits for
 // its ticket (mtl_present_wait), and the blit's submission comes after the frame's own on the one queue. DM_VK_SYNC_PRESENT=1 presents on the game thread.
 #define PQ_N 4
-static struct { vkimg_t *im; int crop[4], has_crop; uint64_t n; } g_pq[PQ_N];
+static struct { vkimg_t *im; int crop[4], has_crop; uint64_t n; double period; } g_pq[PQ_N];
 static uint64_t g_pq_head, g_pq_tail, g_pq_done;   // queued [tail, head), presents up to ticket g_pq_done are blitted
 static pthread_mutex_t g_pq_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_pq_cv = PTHREAD_COND_INITIALIZER;
 // While the game is held (the pause menu) no frame comes: dm_overlay_redraw presents the last one again with what the overlay now shows.
@@ -491,29 +538,29 @@ static void *present_thread(void *arg) {
         atomic_store(&g_redraw, 0);
         if (g_pq_tail == g_pq_head) {   // a redraw, no new frame
             pthread_mutex_unlock(&g_pq_mu);
-            if (last.im) { pthread_mutex_lock(&g_present_mu); if (swap_make()) present_window(last.im, last.has_crop ? last.crop : NULL); pthread_mutex_unlock(&g_present_mu); }
+            if (last.im) { pthread_mutex_lock(&g_present_mu); if (swap_make()) present_window(last.im, last.has_crop ? last.crop : NULL, -1); pthread_mutex_unlock(&g_present_mu); }
             continue;
         }
         typeof(g_pq[0]) e = g_pq[g_pq_tail % PQ_N];
         pthread_mutex_unlock(&g_pq_mu);
-        if (e.im) { last = e; pthread_mutex_lock(&g_present_mu); if (swap_make()) present_window(e.im, e.has_crop ? e.crop : NULL); pthread_mutex_unlock(&g_present_mu); }
+        if (e.im) { last = e; pthread_mutex_lock(&g_present_mu); if (swap_make()) present_window(e.im, e.has_crop ? e.crop : NULL, e.period); pthread_mutex_unlock(&g_present_mu); }
         pthread_mutex_lock(&g_pq_mu); g_pq_tail++; g_pq_done = e.n; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu);
     }
     return NULL;
 }
 static void present_thread_start(void) { pthread_t t; pthread_create(&t, NULL, present_thread, NULL); pthread_detach(t); }
-static uint64_t present_enqueue(vkimg_t *im, const int crop[4], uint64_t n) {   // im NULL: nothing to show, the ticket still completes in order
+static uint64_t present_enqueue(vkimg_t *im, const int crop[4], uint64_t n, double period) {   // im NULL: nothing to show, the ticket still completes in order
     static int sync = -1; static pthread_once_t once = PTHREAD_ONCE_INIT;
     if (sync < 0) sync = getenv("DM_VK_SYNC_PRESENT") != NULL;
     if (sync || !dm_front_window()) {   // headless: nothing to show; or presenting on this thread
-        if (sync && im) { pthread_mutex_lock(&g_present_mu); if (swap_make()) present_window(im, crop); pthread_mutex_unlock(&g_present_mu); }
+        if (sync && im) { pthread_mutex_lock(&g_present_mu); if (swap_make()) present_window(im, crop, period); pthread_mutex_unlock(&g_present_mu); }
         pthread_mutex_lock(&g_pq_mu); if (g_pq_tail == g_pq_head) g_pq_done = n; pthread_mutex_unlock(&g_pq_mu);   // done at once (after any queued ones)
         return n;
     }
     pthread_once(&once, present_thread_start);
     pthread_mutex_lock(&g_pq_mu);
     while (g_pq_head - g_pq_tail >= PQ_N) pthread_cond_wait(&g_pq_cv, &g_pq_mu);   // never more than PQ_N frames behind
-    typeof(g_pq[0]) *e = &g_pq[g_pq_head % PQ_N]; e->im = im; e->n = n; e->has_crop = crop != NULL; if (crop) memcpy(e->crop, crop, sizeof e->crop);
+    typeof(g_pq[0]) *e = &g_pq[g_pq_head % PQ_N]; e->im = im; e->n = n; e->period = period; e->has_crop = crop != NULL; if (crop) memcpy(e->crop, crop, sizeof e->crop);
     g_pq_head++; pthread_cond_broadcast(&g_pq_cv);
     pthread_mutex_unlock(&g_pq_mu);
     return n;
@@ -544,8 +591,8 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
         void vk_pass_report(void); vk_pass_report();
         pe = g_vkst.ns_exec; pd = g_vkst.ns_desc; pp = g_vkst.ns_pipe; ps = g_ns_submit; pb = g_ubd_bytes; pdr = g_vkst.draws; pg = g_gpu_ns; pkn = g_pkg_n; pkb = g_pkg_bytes; pkt = g_pkg_ns; psb = g_ns_set_build; psh = g_ns_set_hash; psn = g_ns_set_new;
     }
-    if (!im) { no_img++; return present_enqueue(NULL, NULL, n); }
-    if (im->layout != VK_IMAGE_LAYOUT_GENERAL) { undrawn++; return present_enqueue(NULL, NULL, n); }   // never drawn into: nothing to show yet
+    if (!im) { no_img++; return present_enqueue(NULL, NULL, n, period); }
+    if (im->layout != VK_IMAGE_LAYOUT_GENERAL) { undrawn++; return present_enqueue(NULL, NULL, n, period); }   // never drawn into: nothing to show yet
     shown++; atomic_fetch_add(&g_fps_frames, 1);
     if (shot_wanted(n)) shot(im, n);
     { void vk_pass_dump_poll(uint64_t done); uint64_t vk_fence_done(void); vk_pass_dump_poll(vk_fence_done()); void vk_pass_frame(void); vk_pass_frame(); void vk_tex_sweep(void); vk_tex_sweep(); }
@@ -553,7 +600,7 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
         void vk_pipeline_cache_save(void); pthread_t th; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
         pthread_create(&th, &a, (void *(*)(void *))(void *)vk_pipeline_cache_save, NULL); pthread_attr_destroy(&a);
     }
-    return present_enqueue(im, crop, n);
+    return present_enqueue(im, crop, n, period);
 }
 void mtl_present_wait(uint64_t tk) {   // NVN acquire: the window texture's last present has been blitted (the game may draw into it again)
     if (!tk) return;
