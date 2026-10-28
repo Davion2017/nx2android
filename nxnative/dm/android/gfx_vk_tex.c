@@ -462,6 +462,7 @@ typedef struct { tex_t t; view_t v; uint8_t ok, has_v; uint64_t seq; } treg_ver;
 typedef struct { treg_ver cur; treg_ver *old; } treg_t;   // old: TREG_OLD earlier versions, newest first (allocated at the first rewrite)
 static treg_t *g_treg; static int g_ntreg;
 uint64_t g_tex_gen = 1;   // changes whenever a texture ID is registered again or views go (gfx_vk_exec.c's per-submission view cache)
+uint64_t g_samp_gen = 1;  // changes whenever a sampler ID is registered with other parameters (gfx_vk_exec.c samp_cached and the descriptor set memo)
 static samp_par *g_sreg; static uint8_t *g_sreg_ok; static VkSampler *g_samp; static int g_nsreg;
 static pthread_mutex_t g_rmu = PTHREAD_MUTEX_INITIALIZER;
 __attribute__((weak)) uint64_t nvn_jobs_queued(void) { return 0; }
@@ -529,7 +530,7 @@ void mtl_reg_samp(int sid, const samp_par *sp) {
     pthread_mutex_lock(&g_rmu);
     if (sid >= g_nsreg) { int n = sid + 256; g_sreg = realloc(g_sreg, n * sizeof *g_sreg); g_sreg_ok = realloc(g_sreg_ok, n); g_samp = realloc(g_samp, n * sizeof *g_samp);
         memset(g_sreg_ok + g_nsreg, 0, n - g_nsreg); memset(g_samp + g_nsreg, 0, (n - g_nsreg) * sizeof *g_samp); g_nsreg = n; }
-    if (!g_sreg_ok[sid] || memcmp(&g_sreg[sid], sp, sizeof *sp)) { g_sreg[sid] = *sp; g_sreg_ok[sid] = 1; g_samp[sid] = VK_NULL_HANDLE; }   // samplers are cached by parameters below
+    if (!g_sreg_ok[sid] || memcmp(&g_sreg[sid], sp, sizeof *sp)) { g_sreg[sid] = *sp; g_sreg_ok[sid] = 1; g_samp[sid] = VK_NULL_HANDLE; __atomic_fetch_add(&g_samp_gen, 1, __ATOMIC_RELEASE); }   // samplers are cached by parameters below
     pthread_mutex_unlock(&g_rmu);
 }
 static nvn_hmap g_samp_cache = {.klen = sizeof(samp_par)};   // samp_par → VkSampler (VkSamplers are never destroyed: few distinct parameter sets)
