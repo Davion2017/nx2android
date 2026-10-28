@@ -138,6 +138,24 @@ static uint32_t *spv_add_outputs(const uint32_t *w, uint32_t nw, uint32_t mask, 
 }
 static nvn_hmap g_shaders = {.klen = 16};   // {key, stage} → vkshader_t*
 static pthread_mutex_t g_sh_mu = PTHREAD_MUTEX_INITIALIZER;
+// Shared layouts keep pipeline layouts and descriptor bindings reusable across shaders; g_sh_mu protects this cache too.
+static VkDescriptorSetLayout shader_layout(const VkDescriptorSetLayoutBinding *b, uint32_t n) {
+    struct { uint32_t n, b[96][4]; } k = {.n = n};
+    static nvn_hmap cache = {.klen = sizeof k};
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t j = i;
+        while (j && k.b[j - 1][0] > b[i].binding) { memcpy(k.b[j], k.b[j - 1], sizeof k.b[j]); j--; }
+        k.b[j][0] = b[i].binding; k.b[j][1] = b[i].descriptorType; k.b[j][2] = b[i].descriptorCount; k.b[j][3] = b[i].stageFlags;
+    }
+    VkDescriptorSetLayout layout = nvn_hm_get(&cache, &k);
+    if (!layout) {
+        VkDescriptorSetLayoutCreateInfo li = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, n, b};
+        VKCHK(vkCreateDescriptorSetLayout(V.dev, &li, NULL, &layout));
+        void vk_dsl_register(VkDescriptorSetLayout l, const VkDescriptorSetLayoutBinding *b, uint32_t n); vk_dsl_register(layout, b, n);
+        nvn_hm_put(&cache, &k, layout);
+    }
+    return layout;
+}
 vkshader_t *vk_shader(uint64_t key, int stage) {
     bundle_auto();
     struct { uint64_t key; uint64_t stage; } hk = {key, (uint64_t)stage};
@@ -199,9 +217,7 @@ vkshader_t *vk_shader(uint64_t key, int stage) {
         s->dyn[i] = (uint8_t)dyn; s->ndyn += dyn;
         lb[nl++] = (VkDescriptorSetLayoutBinding){b->binding, dyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : desc_type(b->desc), b->count ? b->count : 32, stage_flag(stage), NULL};
     }
-    VkDescriptorSetLayoutCreateInfo li = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, nl, lb};
-    VKCHK(vkCreateDescriptorSetLayout(V.dev, &li, NULL, &s->dsl));
-    void vk_dsl_register(VkDescriptorSetLayout l, const VkDescriptorSetLayoutBinding *b, uint32_t n); vk_dsl_register(s->dsl, lb, nl);
+    s->dsl = shader_layout(lb, nl);
     nvn_hm_put(&g_shaders, &hk, s);
     pthread_mutex_unlock(&g_sh_mu);
     return s;
