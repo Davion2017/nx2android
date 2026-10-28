@@ -408,7 +408,7 @@ static void slots_init(void) {
         VKCHK(vkAllocateCommandBuffers(V.dev, &ai, cb)); g_slot[i].up = g_slot[i].ups[0] = cb[0]; g_slot[i].main = g_slot[i].mains[0] = cb[1]; g_slot[i].nmain_alloc = 1; g_slot[i].nup_alloc = 1;
     }
 }
-uint64_t vk_fence_done(void) { pthread_mutex_lock(&g_done_mu); uint64_t d = g_done; pthread_mutex_unlock(&g_done_mu); return d; }
+uint64_t vk_fence_done(void) { return __atomic_load_n(&g_done, __ATOMIC_ACQUIRE); }   // written under g_done_mu (for the waiters) with a release store
 static void wait_fence(uint64_t f) {
     if (!f) return;
     VkSemaphoreWaitInfo wi = {VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, NULL, 0, 1, &g_timeline, &f};
@@ -788,7 +788,7 @@ static void *completion_main(void *a) {
         pthread_mutex_lock(&g_cmu); g_ch = c->next; if (!g_ch) g_ct = NULL; pthread_mutex_unlock(&g_cmu);
         if (g_prereset > 0 && c->rslot >= 0) { vksub_t *s = &g_slot[c->rslot];   // its command buffers reset here (slot_recycle); the slot is not taken before g_done passes this fence
             if (s->fence == c->fence) { for (int i = 0; i < s->nmain_alloc; i++) vkResetCommandBuffer(s->mains[i], 0); for (int i = 0; i < s->nup_alloc; i++) vkResetCommandBuffer(s->ups[i], 0); } }
-        pthread_mutex_lock(&g_done_mu); if (c->fence > g_done) g_done = c->fence; pthread_cond_broadcast(&g_done_cv); pthread_mutex_unlock(&g_done_mu);
+        pthread_mutex_lock(&g_done_mu); if (c->fence > g_done) __atomic_store_n(&g_done, c->fence, __ATOMIC_RELEASE); pthread_cond_broadcast(&g_done_cv); pthread_mutex_unlock(&g_done_mu);
         free(c->ops); free(c);
     }
     return NULL;
