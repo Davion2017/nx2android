@@ -15,7 +15,7 @@
 enum { FPS_F32, VSYNCS_I32, MS_F32, SEC_F32 };
 #define MS_MARGIN 0.5f
 static float ms_want(int fps) { return 1000.0f / (float)fps - (fps == 60 ? MS_MARGIN : 0); }
-static const struct { const char *build, *what; uint64_t ptr_off; uint32_t field; uint8_t kind, copies; } k_locks[] = {
+static const struct { const char *build, *what; uint64_t ptr_off; uint32_t field; uint8_t kind, copies; uint32_t ptr2; } k_locks[] = {   // ptr2: a second pointer at that object + ptr2 (an IL2CPP class's static fields), 0 = none
     // Monster Hunter Rise 16.0.2: RE Engine's frame limit, a float at [main+0x1295b3f0]+0x434 (the pointer is a global in main's bss). The frame loop (main+0x6b106c8) sleeps until
     // [+0x430] / [+0x434] sixtieths of a second have passed ([+0x430] = 60) and steps the game by the time that really passed (+0x41c), so a higher limit runs the game faster in frames
     // at the same speed. The game sets 30 after boot; it also asks for present interval 2, which the profile's present_interval display ignores.
@@ -51,6 +51,11 @@ static const struct { const char *build, *what; uint64_t ptr_off; uint32_t field
     // 1.0.2 (FPSLocker-Warehouse, patches/0100005027A18000/D8AEEEB4E7F1AB63.yaml: the same two fields, 1 / 62 s at 60), whose reference bytes occur once in this build's data
     { "1d69f09fc684a7d1cbd778b90a5df1e5", "Unity vsync count", 0, 0x7d869d8, VSYNCS_I32, 1 },
     { "1d69f09fc684a7d1cbd778b90a5df1e5", "Unity frame time", 0, 0x7d869e4, SEC_F32, 1 },
+    // Advance Wars 1+2: Re-Boot Camp 1.0.0: Unity 2020.2's OnDemandRendering.renderFrameInterval, an IL2CPP static int: main+0x481b2f8 holds the class (Il2CppClass), whose +0xb8 points to its
+    // static fields, the interval first. The game sets 1 in the menus and 2 in battle (Unity then renders every second frame: 30 fps, the frame's work 33 ms with the CPU and GPU idle).
+    // From masagrator's FPSLocker config for this build (FPSLocker-Warehouse, patches/0100300012F2A000/320A17744AEFD67F.yaml, which writes -1); 1 renders every frame as well.
+    // The host's log of that config on the Y700 read 1 at the title and 2 in the first training battle
+    { "320a17744aefd67fec5738ca0c629795", "Unity render frame interval", 0x481b2f8, 0, VSYNCS_I32, 1, 0xb8 },
 };
 #define NLOCKS ((int)(sizeof k_locks / sizeof k_locks[0]))
 
@@ -166,6 +171,7 @@ void dm_fps_lock_tick(void) {
     for (int r = 0; r < nrow; r++) {
         int k = rows[r]; uint64_t obj = (uint64_t)(uintptr_t)base;
         if (k_locks[k].ptr_off && (!rd((uint64_t)(uintptr_t)(base + k_locks[k].ptr_off), &obj, sizeof obj) || !obj)) continue;   // not created yet
+        if (k_locks[k].ptr2 && (!rd(obj + k_locks[k].ptr2, &obj, sizeof obj) || !obj)) continue;   // the class's static fields not allocated yet
         for (int c = 0; c < k_locks[k].copies; c++) {
             uint64_t a = obj + k_locks[k].field + 4 * (uint64_t)c; uint32_t cur, want; char was[16];
             if (!rd(a, &cur, sizeof cur)) break;
