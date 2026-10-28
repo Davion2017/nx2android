@@ -595,6 +595,7 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout l) {
 // ---------------- submissions: begin, CPU-visible effects, commit ----------------
 static void post(post_op o) { vksub_t *s = cur(); if (s->npost == s->cappost) { s->cappost = s->cappost ? 2 * s->cappost : 64; s->post = realloc(s->post, s->cappost * sizeof *s->post); } s->post[s->npost++] = o; }
 void mtl_init(void) { vk_init(); }
+static int g_shadow_pools;
 void mtl_sub_begin(void) {
     vk_init();
     pthread_mutex_lock(&g_sub_lock);
@@ -606,6 +607,11 @@ void mtl_sub_begin(void) {
     VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     s->main = s->mains[0]; s->nmain_used = 1; s->cb_err = 0; s->up = s->ups[0]; s->nup_used = 1; s->nmain_sent = 0;
     VKCHK(vkBeginCommandBuffer(s->main, &bi)); g_cmd_gen++;
+    // copied pools: what the game wrote before submitting goes into the GPU copy before any part of the submission can reach the GPU (DM_VK_CB_DRAWS sends
+    // parts early; synced at the commit, those parts read the copy as the last submission left it), and only once no earlier submission still reads it
+    pthread_rwlock_rdlock(&g_pool_mu); int shadow = 0; for (int i = 0; i < g_npool; i++) shadow |= g_pool[i].shadow != NULL; pthread_rwlock_unlock(&g_pool_mu);
+    g_shadow_pools = shadow;
+    if (shadow) { wait_fence(g_fence); vk_pools_sync(NULL); }
     if (g_tsq) { vkCmdResetQueryPool(s->main, g_tsq, 2 * (uint32_t)g_cur, 2); vkCmdWriteTimestamp(s->main, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, g_tsq, 2 * (uint32_t)g_cur); }
     if (g_cq) vkCmdResetQueryPool(s->main, g_cq, (uint32_t)g_cur * CQ, CQ);
     s->ncq = 0;
@@ -755,7 +761,6 @@ typedef struct cpend { uint64_t fence, frame; post_op *ops; int n; int slot, rsl
 static cpend *g_ch, *g_ct; static pthread_mutex_t g_cmu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_ccv = PTHREAD_COND_INITIALIZER;
 uint64_t guest_ns(void);
 static uint64_t gpu_ticks(void) { uint64_t g = guest_ns(); if (!g) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); g = (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; } return g * 12 / 625; }
-static int g_shadow_pools;
 // GPU time per NVN frame (the sum of its submissions' timestamp spans), for the timing line's GPU column: the frame a submission belongs to is the one being replayed
 static uint64_t g_cur_frame, g_frame_gpu[64], g_frame_gpu_of[64];
 void mtl_set_frame(uint64_t f) { __atomic_store_n(&g_cur_frame, f, __ATOMIC_RELAXED); }
@@ -804,9 +809,6 @@ static void completion_start(void) { pthread_t t; if (pthread_create(&t, NULL, c
 uint64_t mtl_sub_commit(void) {
     vksub_t *s = cur();
     vk_end_pass_land();
-    pthread_rwlock_rdlock(&g_pool_mu); int shadow = 0; for (int i = 0; i < g_npool; i++) shadow |= g_pool[i].shadow != NULL; pthread_rwlock_unlock(&g_pool_mu);
-    g_shadow_pools = shadow;
-    if (shadow) { wait_fence(g_fence); vk_pools_sync(NULL); }   // copied pools: the GPU copy must not change under an earlier submission still running
     if (g_tsq) vkCmdWriteTimestamp(s->main, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_tsq, 2 * (uint32_t)g_cur + 1);
     VkResult er = vkEndCommandBuffer(s->main); if (s->cb_err && er >= 0) er = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (er < 0) {   // the driver refused something recorded in it: logged with what the submission held, then it is dropped and the game goes on
