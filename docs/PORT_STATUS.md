@@ -8,7 +8,7 @@ Whether the port plays, on which device and game version, and what was checked. 
 
 | Game | Title ID | Status |
 |---|---|---|
-| Graveyard Keeper 2 | `0100005027A18000` | playable on the Legion Y700, update 1.0.4: the opening at a held 30 fps (as on the Switch) |
+| Graveyard Keeper 2 | `0100005027A18000` | playable on the Legion Y700, update 1.0.4: at a held 60 fps (the Switch holds 30; the game's own cap is lifted), with play sessions of 34 minutes and 1 h 54 min from a save |
 | Hades II | `0100A00019DE0000` | playable on the Legion Y700, update 1.0 (v655360): the title, a new save, the Crossroads and runs in Erebus with combat, at a held 60 fps (as on the Switch) |
 | Mario vs. Donkey Kong | `0100B99019412000` | playable on the Legion Y700, update 1.0.1: the intro movie with sound, the title and World 1's levels, docked and handheld, at a held 60 fps (as on the Switch); a 35-minute play soak with no memory growth |
 | NEO: The World Ends with You | `010043B013C5C000` | playable on a Lenovo Legion Y700 (Snapdragon 8 Elite, Adreno 830), update 1.03 |
@@ -46,6 +46,8 @@ The v0.1.0 check (2026-10-27): bundle `7d2b374` ported four games and stopped on
 The v0.1.1 check (2026-10-27): bundle `bd68d8b` (v0.1.0-5-gbd68d8b) ported Hades II, the game it adds, from scratch. By the maintainer's choice only the new game was checked for this release: the Vulkan backend changes it brings (`c9c9e38`) were not run through the check for the other five games, whose rows are still from v0.1.0's bundles. v0.1.1 differs from `bd68d8b` only in documents. The release build installed on the Legion Y700 (`org.nx2a.hades2`) was ported from the development checkout at `75a1a18`, the same sources but for the version number, and starts at the title at 60 fps.
 
 The Tales of Eternia Remastered check (2026-10-27): bundle `8372959` (v0.1.1-1-g8372959) ported it, the game it adds, from scratch. The same commit makes AAudio call back every 5 ms for every game (`audiotoolbox_aaudio.c`); the other games' rows are still from earlier bundles, and only Tales of Eternia was played with that change.
+
+The v0.1.2 release (2026-10-28): by the maintainer's choice no bundle was run through the check. The maintainer instead rebuilt every game from the development checkout while testing on 2026-10-28, and these were played on the Legion Y700 that day: NEO, Hades II, Unpacking and Tales of Eternia from a fresh build folder at `21a0d68` (60 fps), Graveyard Keeper 2 at 60 fps (`21a0d68`), Mario vs. Donkey Kong (`d84dca1`). The core changes since v0.1.1 that touch every game were therefore not run through the check: the display-timed presents (`4802f3c`), the frame rate governor (`dba318d`), the node area cut on the sdk build Graveyard Keeper 2, Tales of Eternia and Viractal share (`8056043`), AAudio's 5 ms callbacks (`8372959`), the FPS counter (`27b96fc`), and the porter's Windows fixes (`e490097`, `2ee2723`). Mario vs. Donkey Kong has no row below: no bundle has ported it yet.
 
 <!-- port_check rows -->
 | Game | Title ID | Version | Result | Output | Time | Bundle | Date |
