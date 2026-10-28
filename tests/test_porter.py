@@ -34,6 +34,11 @@ class AndroidProfiles(unittest.TestCase):
         self.assertIn(NEO, [r.id for r in rows]); self.assertTrue(all(r.android for r in rows))
         self.assertGreater(len(profiles.all_entries(android_only=False)), len(rows))
 
+    def test_fps_setting(self):   # the pause menu's Show FPS (front_android.c settings_load fps=)
+        d = profile_dir([('status', 'boots'), ('setting', 'fps=1')])
+        self.assertEqual(android_profile.load(d.name).settings, {'fps': '1'})
+        with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('setting', 'fps=2')]).name)
+
     def test_default_package(self):
         d = profile_dir([('status', 'boots')])
         self.assertEqual(android_profile.load(d.name).package, 'org.nx2a.t0100000000aaa000')

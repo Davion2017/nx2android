@@ -6,7 +6,7 @@
 #   package      the app's package name (default org.nx2a.t<title ID in lowercase>: a package name's parts start with a letter)
 #   orientation  landscape (default) | any
 #   requires     device features, separated by spaces: bcn (BC texture compression)
-#   setting      <name>=<value>, one row each: the pause menu's defaults on first launch (overlay, rumble, docked)
+#   setting      <name>=<value>, one row each: the pause menu's defaults on first launch (overlay, rumble, docked, fps)
 #   env          <KEY>=<VALUE>, one row each: host switches the game needs on Android (the data pack's env.txt)
 #   overlay      <control> <x> <y> [<r>]: moves one control of the default layout (dm/android/overlay_default.tsv)
 # Usage: android_profile.py header <id> <out.h> (android_profile.h for the host: the gamepad layout, written only when it changes); android_profile.py list;
@@ -21,7 +21,7 @@ sys.path.insert(0, str(ANDROID.parent / 'games'))
 import game   # noqa: E402  (the profile folders, DM_GAMES_DIR included)
 
 STATUS = ('playable', 'wip', 'boots', 'experimental')
-SETTINGS = {'overlay': ('0', '1'), 'rumble': ('0', '1'), 'docked': ('0', '1')}   # the pause menu's settings (front_android.c settings_load)
+SETTINGS = {'overlay': ('0', '1'), 'rumble': ('0', '1'), 'docked': ('0', '1'), 'fps': ('0', '1')}   # the pause menu's settings (front_android.c settings_load)
 REQUIRES = ('bcn',)
 KINDS = {'stick_l': 'OV_STICK_L', 'stick_r': 'OV_STICK_R', 'button': 'OV_BUTTON', 'dpad': 'OV_DPAD', 'menu': 'OV_MENU'}
 SINGLE = ('status', 'tested', 'package', 'orientation', 'requires')
