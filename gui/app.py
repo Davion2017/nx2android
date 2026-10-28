@@ -332,13 +332,13 @@ class GamesTab(QWidget):
         self.table = QTableWidget(0, 4); self.table.setHorizontalHeaderLabels(['Status', 'Game', 'Title ID', 'Tested on'])
         self.table.verticalHeader().setVisible(False); self.table.setEditTriggers(QTableWidget.NoEditTriggers); self.table.setSortingEnabled(True)
         hh = self.table.horizontalHeader(); hh.setSectionResizeMode(1, QHeaderView.Stretch); hh.setSectionResizeMode(2, QHeaderView.ResizeToContents); hh.setSectionResizeMode(3, QHeaderView.Stretch)
-        lab = QLabel('Games with a profile. <b>playable</b>, <b>wip</b> (plays, with parts missing) and <b>boots</b> ones can be ported; <i>ios only</i> profiles run on iPhone (nxnative) and are not ported to Android yet.')
+        lab = QLabel('Games ported to Android. <b>playable</b>, <b>wip</b> (plays, with parts missing) and <b>boots</b> ones can be ported; any other game can still be tried with Experimental on the Port tab.')
         lab.setWordWrap(True); lab.setTextFormat(Qt.RichText)
         v.addWidget(lab); v.addWidget(self.table)
-        call_json(self, ['profiles', '--all', '--json'], self.got)
+        call_json(self, ['profiles', '--json'], self.got)
 
     def got(self, rows, code):
-        rows = sorted(rows or [], key=lambda r: (not r['android'], r['name'].lower()))
+        rows = sorted(rows or [], key=lambda r: r['name'].lower())
         self.table.setSortingEnabled(False); self.table.setRowCount(len(rows))
         for i, r in enumerate(rows):
             st = QTableWidgetItem(r['status']); st.setForeground(QColor(STATUS_COLOUR.get(r['status'], '#000')))
