@@ -23,7 +23,7 @@ static struct {
     uint64_t tex[6][256], samp[6][128], img[6][32];
     blend_st blend[8]; color_st color; chmask_st chmask; ms_st ms; poly_st poly; ds_st ds;
     uint32_t vattr[16]; vs_st vstream[16]; NVNbufferRange vbuf[16];
-    float vp[16][4]; float dnear, dfar; p_scissor sc; int sc_set;
+    float vp[16][4]; float dnear, dfar; p_scissor sc; int sc_set; uint8_t vp_sw[16][4];   // vp_sw: viewport swizzles XOR the identity (p_vp_swizzle)
     int sref[2], smask[2], swmask[2];
     p_poly_offset pofs; float blendc[4]; int depth_clamp, rast_discard, prim_restart;
     tex_t rt_col[8], rt_dep; view_t rt_cview[8], rt_dview; uint8_t rt_has_col[8], rt_has_cview[8], rt_has_dep, rt_has_dview; int rt_n; uint32_t rt_bad[8];   // rt_bad: the first word of a colour slot that is not a texture object (traces)
@@ -1041,6 +1041,11 @@ static void set_dynamic(VkCommandBuffer cb) {
     if (g_lower_left && !g_flipy) { vp.y = (float)S.pass_h - y; vp.height = -h; }   // lower-left viewports count y from the bottom
     else if (!g_lower_left && g_flipy) { vp.y = y + h; vp.height = -h; }        // clip space y up over the same top-left rectangle
     if (!g_depth_zero && !V.has_depth_clip_ctl) { /* GL depth convention without clip control: left as is (rare) */ }
+    // Viewport swizzle (Absolum's FNA3D sets NEGATIVE_Y every frame; Advance Wars 1+2's Unity sets it too): NEGATIVE_Y negates clip y, the same as the viewport flipped about
+    // its centre; facing is decided after the viewport transform in Vulkan as on NVN, so the winding stays. Other swizzles are drawn unswizzled (nvn_mtl.m does the same)
+    { uint32_t sw; memcpy(&sw, S.vp_sw[0], 4);
+      if (sw == 0x100) { vp.y += vp.height; vp.height = -vp.height; }
+      else if (sw) VKRED_ONCE(81, "viewport swizzle %d,%d,%d,%d not implemented (drawn unswizzled)", S.vp_sw[0][0], S.vp_sw[0][1] ^ 2, S.vp_sw[0][2] ^ 4, S.vp_sw[0][3] ^ 6); }
     if (vp.minDepth < 0) vp.minDepth = 0; if (vp.maxDepth > 1) vp.maxDepth = 1;
     if (!BC_SAME(vp, vp)) { vkCmdSetViewport(cb, 0, 1, &vp); g_bc.vp = vp; }
     VkRect2D sc = scissor_rect(); if (!BC_SAME(sc, sc)) { vkCmdSetScissor(cb, 0, 1, &sc); g_bc.sc = sc; }
@@ -1667,7 +1672,7 @@ static void exec_ops(const uint8_t *p) {
         case OP_DRAW_TF: if (!g_rc_skip) draw_tf((const p_draw_tf *)a); break;
         case OP_TF_BIND: { const p_tf_bind *b = (const p_tf_bind *)a; if (b->index >= 0 && b->index < 4) g_tf[b->index] = *b; break; }
         case OP_TF_STATE: if (!V.has_xfb) VKRED_ONCE(80, "transform feedback: the device has none, its draws write nothing"); tf_state((const p_tf_state *)a); break;
-        case OP_VP_SWIZZLE: VKRED_ONCE(81, "viewport swizzle is not implemented"); break;
+        case OP_VP_SWIZZLE: { const p_vp_swizzle *b = (const p_vp_swizzle *)a; memcpy(S.vp_sw[b->first], b->sw, 4 * (size_t)b->n); break; }
         default: VKRED_ONCE(82, "unknown record op %u", h.op); break;
         }
         p += h.size;
