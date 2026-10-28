@@ -170,6 +170,7 @@ void vk_pipeline_cache_save(void) {
 #define MAXPOOL 4096
 static vkpool_t g_pool[MAXPOOL]; static int g_npool;
 static pthread_rwlock_t g_pool_mu = PTHREAD_RWLOCK_INITIALIZER;
+static uint32_t g_pool_gen;   // bumped under the write lock when a pool is added or removed: vk_pool_of's per-thread cache holds while it is unchanged
 static int recv_fds(int sock, int *fds, int max) {
     char data[4096], ctl[CMSG_SPACE(sizeof(int) * 16)]; struct iovec iov = {data, sizeof data};
     struct msghdr m = {0}; m.msg_iov = &iov; m.msg_iovlen = 1; m.msg_control = ctl; m.msg_controllen = sizeof ctl;
@@ -256,7 +257,7 @@ void mtl_pool_add(const void *mem, uint64_t size) {
         VKCHK(vkAllocateMemory(V.dev, &ai, NULL, &p->mem)); VKCHK(vkBindBufferMemory(V.dev, p->buf, p->mem, 0));
         void *m; VKCHK(vkMapMemory(V.dev, p->mem, 0, VK_WHOLE_SIZE, 0, &m)); p->shadow = m;
     }
-    g_npool++;
+    g_npool++; __atomic_fetch_add(&g_pool_gen, 1, __ATOMIC_RELEASE);
     pthread_rwlock_unlock(&g_pool_mu);
     static uint64_t zc_bytes, cp_bytes; if (zc) cp_bytes += size; else zc_bytes += size;
     static int nlog; if (nlog++ < 24) VKLOG("memory pool %p +%#llx: %s (zero-copy %.1f MB, copied %.1f MB)", mem, (unsigned long long)size, zc ? "copied" : "zero-copy", zc_bytes / 1048576.0, cp_bytes / 1048576.0);
@@ -264,7 +265,7 @@ void mtl_pool_add(const void *mem, uint64_t size) {
 void mtl_pool_del(const void *mem) {
     pthread_rwlock_wrlock(&g_pool_mu);
     for (int i = 0; i < g_npool; i++) if (g_pool[i].lo == (uint64_t)(uintptr_t)mem) {
-        vkpool_t p = g_pool[i]; g_pool[i] = g_pool[--g_npool];
+        vkpool_t p = g_pool[i]; g_pool[i] = g_pool[--g_npool]; __atomic_fetch_add(&g_pool_gen, 1, __ATOMIC_RELEASE);
         pthread_rwlock_unlock(&g_pool_mu);
         if (p.zero_copy) pool_copy_back(&p);
         vk_defer_free_buffer(p.buf, p.mem);   // the AHardwareBuffer goes with the imported memory's last reference
@@ -274,10 +275,15 @@ void mtl_pool_del(const void *mem) {
     pthread_rwlock_unlock(&g_pool_mu);
 }
 vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) {
+    // the last pools this thread found, while none was added or removed: the replay looks up every buffer binding of every draw, and the read lock alone was ~6% of it
+    static __thread struct { uint32_t gen; vkpool_t *p[4]; } c;   // gen: g_pool_gen + 1 (0: empty)
+    uint32_t g = __atomic_load_n(&g_pool_gen, __ATOMIC_ACQUIRE) + 1;
+    if (c.gen == g) for (int i = 0; i < 4; i++) { vkpool_t *p = c.p[i]; if (p && addr >= p->lo && addr + len <= p->hi) return p; }
     vkpool_t *r = NULL;
     pthread_rwlock_rdlock(&g_pool_mu);
     for (int i = 0; i < g_npool; i++) if (addr >= g_pool[i].lo && addr + len <= g_pool[i].hi) { r = &g_pool[i]; break; }
     pthread_rwlock_unlock(&g_pool_mu);
+    if (r) { if (c.gen != g) { memset(&c, 0, sizeof c); c.gen = g; } memmove(&c.p[1], &c.p[0], 3 * sizeof *c.p); c.p[0] = r; }
     return r;
 }
 int vk_buf_at(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off) {
