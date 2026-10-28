@@ -1,0 +1,12 @@
+# Super Mario Bros. Wonder (010015100B514000), update 1.2.1: Nintendo's sead / agl / gsys engine on NVN.
+# Tested 2026-10-29 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), driven with DM_CTL: the title, a new save (one player, Luigi), the prologue level
+# (dialogue, running, jumping, coins, the goal), the Bowser cutscene, the flag-pole level's start and the world map after a restart from the save. 60 fps most of the time, with
+# stretches where the adaptive rate steps down to 40 (frame work p50 9-13 ms, GPU about 9 ms, replay 5.8 ms a frame); about 1.1-1.35 GB footprint; no audio underrun.
+# What it needed from the core: CPU-written linear render-target textures copied from their storage (its sky's four 64x1 RGBA16F gradients: without it diagonal bands of
+# saturated colour over every level). The one red log line: its title logs "SetRenderEnableConditional: the host draws anyway"; render_cond on changed nothing seen, so it is left off.
+# The shader tables are the Windows split's (\ in paths), with the same 16,268 keys as upstream's. Not tested yet: later worlds, Wonder effects, multiplayer.
+# Known gap: button icons in the game's text draw as '?' (the Android port ships no Nintendo extension shared font; dm/tools/make_ext_font.py makes one)
+status	playable
+tested	v327680 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.supermariobroswonder
+orientation	landscape
