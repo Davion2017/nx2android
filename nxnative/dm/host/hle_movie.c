@@ -80,6 +80,7 @@ typedef struct {
     uint8_t *vhdr[2]; int vhdr_n[2]; stb_vorbis *vb; int ch, rate; uint32_t ogg_seq; int64_t ogg_gran; int red_vb;
     // AAC (Monster Hunter Rise's movies): AudioToolbox's converter, opened at the first packet from the AudioSpecificConfig (Configure's csd-0, kept in vhdr[0]); the packet being fed
     AudioConverterRef aac; const uint8_t *aac_pkt; UInt32 aac_pkt_n; AudioStreamPacketDescription aac_desc;
+    int64_t aac_pts[16]; int aac_npts, aac_fpp;  // times of the packets fed and not decoded yet (Android's MediaCodec gives a packet's PCM two packets later); frames per packet
     uint64_t dec_n, dec_ns, dec_max;            // decode timing (on the host thread, per packet)
     unsigned long ncall[24];
 } mdec_t;
@@ -356,21 +357,30 @@ static int md_aac_open(mdec_t *d) {
     st = AudioConverterSetProperty(d->aac, kAudioConverterDecompressionMagicCookie, (UInt32)(p - ck), ck);
     if (st && !d->red_vb++) LOG("[RED] movie: AAC configuration not accepted by AudioToolbox (%d)", (int)st);
     LOG("[movie] AAC: %d channels %d Hz, AudioSpecificConfig %d bytes (object type %d)", d->ch, d->rate, an, asc[0] >> 3);
+    d->aac_fpp = asc[0] >> 3 == 5 || asc[0] >> 3 == 29 ? 2048 : 1024;   // HE-AAC (SBR) doubles the frames of a packet
+    d->aac_npts = 0;
     return 1;
 }
-// one packet → PCM16 interleaved in the slot; 1 when there are samples (the decoder's start-up delay may give none for the first packet)
+// one packet → PCM16 interleaved in the slot; 1 when there are samples (the decoder's start-up delay may give none for the first packet). The output's time (jpts_out) is that of the
+// oldest packet not decoded yet: MediaCodec's AAC decoder hands a packet's PCM out two packets later, and stamped with the newest packet's time the sound ran 43 ms behind the picture
 static int md_aac(mdec_t *d, const uint8_t *p, int n, int slot) {
     if (!d->aac && !md_aac_open(d)) return 0;
     if (n <= 0) return 0;
+    if (d->aac_npts == 16) memmove(d->aac_pts, d->aac_pts + 1, --d->aac_npts * sizeof *d->aac_pts);
+    d->aac_pts[d->aac_npts++] = d->jpts;
     if (d->out[slot].cap < MD_PCM_CAP) { free(d->out[slot].frm); d->out[slot].frm = malloc(MD_PCM_CAP); d->out[slot].cap = MD_PCM_CAP; }
     d->aac_pkt = p; d->aac_pkt_n = (UInt32)n;
-    UInt32 frames = (UInt32)(MD_PCM_CAP / (2 * d->ch));
+    UInt32 frames = (UInt32)d->aac_fpp;   // one packet's worth per output (GetOutputBufferSize); the converter keeps what more it has for the next
     AudioBufferList ob = {1, {{(UInt32)d->ch, frames * 2u * d->ch, d->out[slot].frm}}};
     OSStatus st = AudioConverterFillComplexBuffer(d->aac, aac_feed, d, &frames, &ob, NULL);
     d->aac_pkt = NULL;
     if (st && st != 1 && !d->red_dec++) LOG("[RED] movie: AAC decode error (AudioToolbox %d, first case)", (int)st);
     d->out[slot].bytes = (size_t)frames * 2 * d->ch;
-    return frames > 0;
+    if (!frames) return 0;
+    int k = (int)((frames + (UInt32)d->aac_fpp / 2) / (UInt32)d->aac_fpp); if (k < 1) k = 1; if (k > d->aac_npts) k = d->aac_npts;
+    d->jpts_out = d->aac_npts ? d->aac_pts[0] : d->jpts;
+    memmove(d->aac_pts, d->aac_pts + k, (size_t)(d->aac_npts -= k) * sizeof *d->aac_pts);
+    return 1;
 }
 // The H.264 decoder, made by Configure (when the stream's parameter sets come with it) or by the first packet; RGBA pictures in the native texture mode either way.
 // Absolum's movies bring csd-0 / csd-1 to Configure, and a decoder made there used to stay NV12: the frames' bytes went into the RGBA texture as they were
@@ -451,7 +461,7 @@ static void md_pump(mdec_t *d) {
         pthread_mutex_lock(&d->mu);
         d->infree[d->ninfree++] = pk.in;
         int ready = got || eos || (d->type != MD_TYPE_VP9 && !MD_AUDIO(d) && !avc);   // an end-of-stream packet without a picture still yields an output to carry the flag back; VP8 has no decoder and gives black frames
-        if (ready) { d->out[slot].pic = got; d->out[slot].pts = got && avc ? d->jpts_out : pk.pts; d->out[slot].flags = more ? pk.flags & ~4u : pk.flags; d->outq[d->noutq++] = slot; }
+        if (ready) { d->out[slot].pic = got; d->out[slot].pts = got && (avc || d->type == MD_TYPE_AAC) ? d->jpts_out : pk.pts; d->out[slot].flags = more ? pk.flags & ~4u : pk.flags; d->outq[d->noutq++] = slot; }
         else d->out[slot].used = 0;
         if (more) d->avc_drain = 1;
         int ineos = d->in_eos;
@@ -487,7 +497,10 @@ HLE_FORCE("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11De
     // offered (16 of 16 video, 59 of 64 audio), so how far its extractor gets ahead of the picture on screen is the video slots plus the 4 queued packets. With 8 that was 0.4 s, and the
     // audio behind the next video packet, whose clock the player follows, ran dry: 86 pictures in 25 s, a black screen with a loading icon. With 16 (or 32) all 1,960 play at 30 fps.
     // A video slot is allocated when first used, so the 8 more cost a greedy player 24 MB of NV12 at 1080p (64 MB as RGBA)
-    d->nout = audio ? MD_NOUT : MD_NOUT_VIDEO;
+    // DM_MOVIE_AUDIO_SLOTS=N (a profile's env row) gives audio decoders fewer: Mario vs. Donkey Kong's player keeps the outputs it acquires in a ring of 32 (main+0xe9412c pushes with no
+    // capacity check), so its 33rd held output was written past the ring over the video player beside it, and the video player crashed on the decoder pointer it found there (0x22, an output index).
+    // The SDK's decoder (stagefright over a software OMX component) has a few output buffers, so on the Switch the ring never fills
+    { static int na = -1; if (na < 0) { const char *e = getenv("DM_MOVIE_AUDIO_SLOTS"); na = e && atoi(e) >= 4 && atoi(e) < MD_NOUT ? atoi(e) : MD_NOUT; } d->nout = audio ? na : MD_NOUT_VIDEO; }
     for (int i = 0; i < MD_NIN; i++) { d->in[i] = malloc(MD_INCAP); d->infree[i] = i; }
     d->ninfree = MD_NIN;
     pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 1 << 20);
@@ -564,6 +577,8 @@ static void md_reset(mdec_t *d, int close) {
     pthread_mutex_lock(&d->dmu);   // wait for the packet being decoded
     if (close) md_job(d, MDJ_CLOSE);
     if (d->avc) mavc_drop(d->avc);   // H.264 pictures waiting for their turn belong to the old position
+    if (d->aac) { AudioConverterDispose(d->aac); d->aac = NULL; }   // so does the PCM of AAC packets still in the decoder (reopened at the next packet)
+    d->aac_npts = 0;
     pthread_mutex_lock(&d->mu);
     // Every input goes back to the free list, as with MediaCodec, but one the client holds may still be sent: Big Brain Academy: Brain vs. Brain's event thread acquires inputs while its
     // control thread flushes to loop an activity preview, and sends them after the flush (SendInputBufferForDecode claims them back). Those are withheld for a while (h_movie_AcqIn)
@@ -697,7 +712,13 @@ HLE_FORCE("_ZN5movie7Decoder21GetOutputBufferFormatEiPNS_9MediaDataE", "movie de
 HLE_FORCE("_ZN5movie7Decoder19GetOutputBufferSizeEPiS1_", "movie decoder: output buffer size (one NV12 frame)", int, h_movie_OutSize, void **self, int *size, int *mode) {
     mdec_t *d = md_of(self); if (!d) return 0x1000;
     if (!size || !mode) return 0x100b;
-    if (MD_AUDIO(d)) { *size = MD_PCM_CAP; *mode = d->mode; MD_TRACE(d, 11, "GetOutputBufferSize → %d (PCM)", *size); return 0; }
+    // AAC: one packet's PCM, as the SDK's decoder hands it out. Mario vs. Donkey Kong's player sizes its AudioOut buffers by this, copies one output into each and plays the whole buffer
+    // (its clock counts size / 4 frames per output): at MD_PCM_CAP each 21 ms of sound was followed by 0.66 s of silence. Vorbis packets vary (128 to 4096 samples), so they keep the largest
+    if (MD_AUDIO(d)) {
+        int ch = d->ch > 0 ? d->ch : 2, ot = d->vhdr_n[0] >= 1 ? d->vhdr[0][0] >> 3 : 2;
+        *size = d->type == MD_TYPE_AAC ? (ot == 5 || ot == 29 ? 2048 : 1024) * ch * 2 : MD_PCM_CAP; *mode = d->mode;
+        MD_TRACE(d, 11, "GetOutputBufferSize → %d (PCM)", *size); return 0;
+    }
     int w, h, stride, slice; md_dims(d, &w, &h, &stride, &slice);
     *size = stride * slice * 3 / 2; *mode = d->mode;   // the SDK fills the second output with the decoder mode
     MD_TRACE(d, 11, "GetOutputBufferSize → %d (%d×%d)", *size, w, h);

@@ -1,7 +1,7 @@
 // Android port: the AudioToolbox subset the host uses.
 //   AudioUnit (an output unit with a render callback) on AAudio: dm/android/compat/audiotoolbox_aaudio.c. Only the output unit, the stream format (interleaved
 //   linear PCM) and the render callback are supported, which is all hle_audio.c sets.
-//   AudioConverter (AAC → PCM for the SDK's movie library): not available yet, AudioConverterNew fails and the movie plays without sound.
+//   AudioConverter (AAC → interleaved 16-bit PCM for the SDK's movie library) on MediaCodec: dm/android/compat/audioconverter_mediacodec.c.
 #pragma once
 #include <stdint.h>
 #include <stddef.h>

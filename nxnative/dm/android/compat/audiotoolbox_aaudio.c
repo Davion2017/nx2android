@@ -97,11 +97,4 @@ OSStatus AudioOutputUnitStart(AudioUnit u) {
 OSStatus AudioOutputUnitStop(AudioUnit u) { close_stream(u); return noErr; }
 OSStatus AudioUnitUninitialize(AudioUnit u) { close_stream(u); return noErr; }
 OSStatus AudioComponentInstanceDispose(AudioComponentInstance u) { if (u) { close_stream(u); free(u); } return noErr; }
-
-// ---- AudioConverter: not available yet (AAC through MediaCodec is a later step) ----
-OSStatus AudioConverterNew(const AudioStreamBasicDescription *in, const AudioStreamBasicDescription *out, AudioConverterRef *c) { (void)in; (void)out; *c = NULL; return kAudio_UnimplementedError; }
-OSStatus AudioConverterSetProperty(AudioConverterRef c, AudioConverterPropertyID id, UInt32 size, const void *data) { (void)c; (void)id; (void)size; (void)data; return kAudio_UnimplementedError; }
-OSStatus AudioConverterFillComplexBuffer(AudioConverterRef c, AudioConverterComplexInputDataProc proc, void *ref, UInt32 *packets, AudioBufferList *out, AudioStreamPacketDescription *desc) {
-    (void)c; (void)proc; (void)ref; (void)out; (void)desc; if (packets) *packets = 0; return kAudio_UnimplementedError;
-}
-OSStatus AudioConverterDispose(AudioConverterRef c) { (void)c; return noErr; }
+// AudioConverter (AAC → PCM) is on MediaCodec: dm/android/compat/audioconverter_mediacodec.c
