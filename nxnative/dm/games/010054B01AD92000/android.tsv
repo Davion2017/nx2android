@@ -6,5 +6,7 @@ orientation	landscape
 requires	bcn
 # the 860 MB memory pool as a copied pool: the Legion Y700 2023's gralloc aborts allocating a hardware buffer that big
 env	DM_VK_ZEROCOPY_MAX_MB=512
-# handheld (720p) by default: docked 1080p took 34 ms of GPU a frame in battle on that device (about 22 fps), handheld 11-20 ms (the adaptive rate holds 40 fps)
+# handheld (720p) by default: docked 1080p took 34 ms of GPU a frame in battle on that device (about 22 fps), handheld 11-20 ms
 setting	docked=0
+# the replay on its own thread: in battle it took 17.5 ms of the game thread's 33 ms a frame (about 3,000 draws), which held the adaptive rate at 30 fps
+env	DM_NVN_ASYNC=1
