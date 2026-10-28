@@ -36,6 +36,12 @@ sys_resource	0x1000000
 # a 1 h 54 min session mapped at most 2.44 GB of the 3.21 GB pool and no map was refused
 mem_map_limit	on
 
+# ---- Frame rate ----
+# 60 fps (30 on the Switch): the host writes Unity's vsync count and frame time in game memory (hle_fpslock.c). The game still asks for present interval 2, which
+# present_interval display ignores; both are needed (with the writes alone, frames stayed at 33.3 ms)
+fps_target	60
+present_interval	display
+
 # ---- Shader split ----
 shader_groups	/Data/=data
 shader_note	Graveyard Keeper 2 shaders (provisional profile)

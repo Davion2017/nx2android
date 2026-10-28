@@ -7,6 +7,8 @@
 # (the opening reaches no save point), the areas past the dungeon, and handheld mode (played docked).
 # 2026-10-28: the game aborted about 24 minutes into play (Unity's allocator out of address space: its sdk build lacked the SDK's node area cut, sdk_patches.py). With the cut and
 # mem_map_limit, two sessions by hand from a save: 34 minutes, then 1 h 54 min at 30 fps, mapped memory at most 2.44 GB of the 3.21 GB pool, no map refused, no red log line.
+# 2026-10-28: 60 fps (fps_target 60 with present_interval display): from a save, frame p50 16.6 ms, p95 18.2 ms, no dropped frame after the load, frame work p90 about
+# 11 ms, GPU about 2.2 ms a frame, footprint 1.27 GB. The user played it and found the game's speed right at 60.
 status	playable
 tested	v262144 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.graveyardkeeper2
