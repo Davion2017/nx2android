@@ -135,4 +135,14 @@ CUTS = {
     (0x1423fc, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
     (0x142468, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
   ],
+  # SDK 21.4.4 sdk (Graveyard Keeper 2 1.0.4, Tales of Eternia Remastered 2.0.0 and Viractal 1.4.5, the same build): the node area cut, as Silksong's. Unity 6 takes all its memory through
+  # AllocateAddressRegion and AllocateMemoryPages; IL2CPP's Boehm GC grows its heap with memalign (sdk → main's aligned_alloc, Unity's allocator) and aborts when that returns null
+  # (main+0x6cd910 → nn::diag::detail::AbortImpl). Without the cut Graveyard Keeper 2's regions started after the 1 GB node area: the alias region's high-water mark was +3.76 GB 35 s in
+  # and +4.00 GB (of 4.375) at 15 minutes with 2.01 GB mapped, and about 24 minutes into play the game aborted there. The constructor is at sdk+0x14fbe0 (limit = alias start + 0x3fe00000
+  # at +0x28, a unit heap of 0x30-byte nodes, the area then registered as occupied at +0x14fc5c); VammManager::AllocateAddressRegion (sdk+0x14fd00) aligns regions to 64 KB or 2 MB only,
+  # so no alignment cut is needed
+  '148394139d9d26ca8afd5c9ba5d30601': [
+    (0x14fbf0, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x14fc5c, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+  ],
 }

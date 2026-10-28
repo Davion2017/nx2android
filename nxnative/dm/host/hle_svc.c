@@ -122,6 +122,8 @@ static int64_t alias_unmapped(uint64_t off, uint64_t n) {
 }
 static _Atomic int64_t g_alias_mapped;   // bytes mapped in the alias region (page bitmap)
 static pthread_mutex_t g_phys_mu = PTHREAD_MUTEX_INITIALIZER;   // mem_map_limit: the pool check and the map it allows are one step
+// The alias region and the bytes mapped in it (hle_os.c's address region counts)
+void svc_alias_range(uint8_t **base, size_t *size, uint64_t *mapped) { mem_init(); *base = g_alias; *size = g_alias_cap; *mapped = (uint64_t)atomic_load(&g_alias_mapped); }
 
 // Diagnostic DM_ALIAS_WINDOWS=<window MB>: every 30 s, the mapped memory of each window of that size in the alias region (windows aligned to the size in absolute addresses, counted from the page
 // bitmap; windows with nothing mapped are left out). For sizing an allocator that reserves fixed, aligned windows and commits pages from each window's start: Unreal's FMallocBinned3 takes

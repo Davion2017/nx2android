@@ -159,3 +159,53 @@ HLE_FORCE("_ZN2nn3mem17StandardAllocator8AllocateEm", "passed straight to the SD
     pthread_once(&g_sa_once, sa_init);
     return g_sa_big_align && size >= 0x10000 ? g_sa_alloc_al(self, size, 0x10000) : g_sa_alloc(self, size);
 }
+
+// Address regions the game's modules take (nn::os::AllocateAddressRegion / FreeAddressRegion, Unity 6's own memory): passed straight to the SDK and counted. A refused region is
+// invisible to the host otherwise (the SDK's VammManager places regions in the alias region itself, and only the pages mapped into them reach MapPhysicalMemory): Graveyard Keeper 2's
+// Unity allocator got no region about 24 minutes into play, returned null to the Boehm GC's memalign, and the GC aborted (main+0x6cd910) with nothing in the log naming the cause.
+// One line per 256 MB crossed by the bytes reserved or by the highest region end, one red line per refusal (the first 8)
+static Result (*g_ar_alloc)(uint64_t *, size_t), (*g_ar_free)(uint64_t);
+static pthread_once_t g_ar_once = PTHREAD_ONCE_INIT;
+static pthread_mutex_t g_ar_mu = PTHREAD_MUTEX_INITIALIZER;
+static struct { uint64_t a, n; } *g_ar; static int g_nar, g_car; static uint64_t g_ar_bytes, g_ar_top;
+static void ar_init(void) {
+    module_t *ms = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) ms = &g_mod[i];
+    g_ar_alloc = ms ? module_sym(ms, "_ZN2nn2os21AllocateAddressRegionEPmm") : NULL;
+    g_ar_free = ms ? module_sym(ms, "_ZN2nn2os17FreeAddressRegionEm") : NULL;
+    if (!g_ar_alloc || !g_ar_free) die("nn::os::AllocateAddressRegion / FreeAddressRegion not found in the SDK");
+}
+void svc_alias_range(uint8_t **base, size_t *size, uint64_t *mapped);   // hle_svc.c
+static void ar_log(const char *what, size_t size, Result r) {   // caller holds g_ar_mu
+    uint8_t *al; size_t ac; uint64_t mapped; svc_alias_range(&al, &ac, &mapped);
+    LOG("%s[mem] %s +%#zx%s: %d address regions live, %.2f GB reserved, region ends up to +%.2f GB of the alias region (%.2f GB), %.2f GB mapped", r ? "[RED] " : "", what, size,
+        r ? " refused" : "", g_nar, g_ar_bytes / 1073741824.0, g_ar_top / 1073741824.0, ac / 1073741824.0, mapped / 1073741824.0);
+    if (r) LOG("[RED] [mem] AllocateAddressRegion result %#x (0x1803: no free range that large left in the alias region)", r);
+}
+HLE_FORCE("_ZN2nn2os21AllocateAddressRegionEPmm", "passed straight to the SDK; the regions are counted, and a refusal is logged", Result, h_os_AllocAR, uint64_t *out, size_t size) {
+    pthread_once(&g_ar_once, ar_init);
+    Result r = g_ar_alloc(out, size);
+    pthread_mutex_lock(&g_ar_mu);
+    if (r) { static int nred; if (nred++ < 8) ar_log("AllocateAddressRegion", size, r); }
+    else {
+        if (g_nar == g_car) { int c = g_car ? g_car * 2 : 256; void *nw = realloc(g_ar, (size_t)c * sizeof *g_ar); if (nw) { g_ar = nw; g_car = c; } }
+        if (g_nar < g_car) { g_ar[g_nar].a = *out; g_ar[g_nar].n = size; g_nar++; g_ar_bytes += size; }
+        uint8_t *al; size_t ac; uint64_t mapped; svc_alias_range(&al, &ac, &mapped);
+        uint64_t t0 = g_ar_top, end = *out + size - (uint64_t)(uintptr_t)al;
+        if (end > g_ar_top && end <= ac) g_ar_top = end;
+        if ((g_ar_bytes - size) >> 28 != g_ar_bytes >> 28 || t0 >> 28 != g_ar_top >> 28) ar_log("AllocateAddressRegion", size, 0);
+    }
+    pthread_mutex_unlock(&g_ar_mu);
+    return r;
+}
+HLE_FORCE("_ZN2nn2os17FreeAddressRegionEm", "passed straight to the SDK; the regions are counted", Result, h_os_FreeAR, uint64_t addr) {
+    pthread_once(&g_ar_once, ar_init);
+    Result r = g_ar_free(addr);
+    pthread_mutex_lock(&g_ar_mu);
+    for (int i = 0; i < g_nar; i++) if (g_ar[i].a == addr) {
+        uint64_t b0 = g_ar_bytes, n = g_ar[i].n; g_ar_bytes -= n; g_ar[i] = g_ar[--g_nar];
+        if (b0 >> 28 != g_ar_bytes >> 28) ar_log("FreeAddressRegion", (size_t)n, 0);
+        break;
+    }
+    pthread_mutex_unlock(&g_ar_mu);
+    return r;
+}

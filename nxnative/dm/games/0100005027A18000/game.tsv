@@ -31,6 +31,10 @@ mem_stack	0x10000000
 app_pool	0xCD500000
 # the NPDM declares 16 MB of system resource
 sys_resource	0x1000000
+# Unity's free memory (main+0xcaf2d0) is GetInfo's total less used non-system memory, and its maps grow in steps as play goes on (about 16 MB a minute over the first 30 minutes):
+# the used memory counts the alias region's mapped pages and the pool is enforced, as on Horizon (hle_svc.c). With it (and the node area cut on its sdk build, sdk_patches.py)
+# a 1 h 54 min session mapped at most 2.44 GB of the 3.21 GB pool and no map was refused
+mem_map_limit	on
 
 # ---- Shader split ----
 shader_groups	/Data/=data
