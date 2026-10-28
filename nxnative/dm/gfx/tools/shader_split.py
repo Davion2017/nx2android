@@ -1052,13 +1052,14 @@ def zs_dicts(romfs):
     return {struct.unpack_from('<I', m, 4)[0]: m for _, m in sarc_members(d) if m[:4] == bytes.fromhex('37a430ec')}
 
 def unzs(path):
-    """A zstd file decompressed: frames without a dictionary through the zstd command as before, frames that name one with that dictionary from ZDICTS"""
+    """A zstd file decompressed: frames without a dictionary as they are, frames that name one with that dictionary from ZDICTS. The zstd module, not the zstd command: Windows has no
+    such command (Mario vs. Donkey Kong's .zs shaders stopped the split there), and the porter already requires the module"""
     d = open(path, 'rb').read()
     fhd = d[4] if len(d) > 5 and d[:4] == bytes.fromhex('28b52ffd') else 0
     n, o = (0, 1, 2, 4)[fhd & 3], 6 - (fhd >> 5 & 1)   # dictionary ID size; it follows the window descriptor, which single-segment frames omit
     did = int.from_bytes(d[o:o + n], 'little')
-    if not did: return subprocess.run(['zstd', '-d', '-c', '-q', path], capture_output=True, check=True).stdout
     zstd = zstd_mod()
+    if not did: return zstd.decompress(d)
     if did not in ZDICTS: red(f'{path}: a frame needs zstd dictionary {did}, which Pack/ZsDic.pack.zs does not have')
     if did not in _ZD: _ZD[did] = zstd.ZstdDict(ZDICTS[did])
     return zstd.decompress(d, zstd_dict=_ZD[did])
