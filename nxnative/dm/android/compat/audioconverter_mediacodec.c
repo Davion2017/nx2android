@@ -132,6 +132,21 @@ OSStatus AudioConverterFillComplexBuffer(AudioConverterRef c, AudioConverterComp
     *packets = (UInt32)frames;
     return frames ? noErr : st;
 }
+// The PCM still in the codec once no packet comes (hle_movie.c md_aac_tail): an end-of-stream input drains it, the codec is closed (the next fill opens it afresh, should
+// the stream go on), and up to cap bytes of what is decoded go out per call
+size_t dm_aac_tail(AudioConverterRef c, void *dst, size_t cap) {
+    if (c->mc && c->nin > c->nout) {
+        ssize_t i = AMediaCodec_dequeueInputBuffer(c->mc, 20000);
+        if (i >= 0) {
+            AMediaCodec_queueInputBuffer(c->mc, (size_t)i, 0, 0, (uint64_t)c->pts, AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM);
+            for (int k = 0; k < 10 && c->nin > c->nout; k++) drain(c, 10000);   // the end-of-stream output carries no PCM and is counted too
+        }
+        AMediaCodec_stop(c->mc); AMediaCodec_delete(c->mc); c->mc = NULL; c->nin = c->nout = 0;
+    }
+    size_t fb = 2u * c->out.mChannelsPerFrame, n = c->npend < cap ? c->npend : cap; n -= n % fb;
+    memcpy(dst, c->pend, n); memmove(c->pend, c->pend + n, c->npend - n); c->npend -= n;
+    return n;
+}
 OSStatus AudioConverterDispose(AudioConverterRef c) {
     if (!c) return noErr;
     if (c->mc) { AMediaCodec_stop(c->mc); AMediaCodec_delete(c->mc); }

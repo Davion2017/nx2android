@@ -37,6 +37,7 @@ void mavc_drop(mavc *a) {
 }
 void mavc_free(mavc *a) { if (!a) return; mavc_drop(a); close_codec(a); free(a->au); free(a); }
 int mavc_queued(const mavc *a) { return a->nq; }
+int mavc_held(const mavc *a) { return a->nq + (a->mc && !a->eos_sent && a->nin > a->nout ? (int)(a->nin - a->nout) : 0); }
 void mavc_set_rgba(mavc *a) { a->rgba = 1; }
 
 static void keep_ps(mavc *a, const uint8_t *nal, size_t n) {   // a parameter set NAL unit (without start code)

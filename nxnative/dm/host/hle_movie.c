@@ -81,6 +81,7 @@ typedef struct {
     // AAC (Monster Hunter Rise's movies): AudioToolbox's converter, opened at the first packet from the AudioSpecificConfig (Configure's csd-0, kept in vhdr[0]); the packet being fed
     AudioConverterRef aac; const uint8_t *aac_pkt; UInt32 aac_pkt_n; AudioStreamPacketDescription aac_desc;
     int64_t aac_pts[16]; int aac_npts, aac_fpp;  // times of the packets fed and not decoded yet (Android's MediaCodec gives a packet's PCM two packets later); frames per packet
+    uint64_t in_ns;                              // when the last packet came (md_tail)
     uint64_t dec_n, dec_ns, dec_max;            // decode timing (on the host thread, per packet)
     unsigned long ncall[24];
 } mdec_t;
@@ -215,7 +216,7 @@ static void md_dims(const mdec_t *d, int *w, int *h, int *stride, int *slice) {
 }
 
 // ---------- Host decoding thread ----------
-enum { MDJ_NONE, MDJ_DECODE, MDJ_CLOSE, MDJ_QUIT, MDJ_TAKE };
+enum { MDJ_NONE, MDJ_DECODE, MDJ_CLOSE, MDJ_QUIT, MDJ_TAKE, MDJ_TAIL };
 static int md_threads(void) { long n = sysconf(_SC_NPROCESSORS_ONLN); return n >= 8 ? 4 : 2; }
 // I420 → NV12 (stride = width, plane height = height); a smaller picture is padded with black, a larger one cropped
 static void md_nv12(const vpx_image_t *im, uint8_t *dst, int w, int h) {
@@ -382,6 +383,23 @@ static int md_aac(mdec_t *d, const uint8_t *p, int n, int slot) {
     memmove(d->aac_pts, d->aac_pts + k, (size_t)(d->aac_npts -= k) * sizeof *d->aac_pts);
     return 1;
 }
+// The PCM of packets a converter still holds once no more come: MediaCodec's AAC decoder (Android, audioconverter_mediacodec.c) gives a packet's PCM two packets later, and
+// Donkey Kong Country Returns HD's Unity player sends no end-of-stream packet: it waits for the last packets' outputs, so its 119 s opening movie stayed on its last picture for
+// good (until A skipped it). AudioToolbox decodes each packet at once and has none
+__attribute__((weak)) size_t dm_aac_tail(AudioConverterRef c, void *dst, size_t cap) { (void)c; (void)dst; (void)cap; return 0; }
+// The same for H.264: MediaCodec keeps the last pictures in its pipeline until an end-of-stream input (movie_avc.c); VideoToolbox's decoder (hle_movie_avc.c) has none held
+__attribute__((weak)) int mavc_held(const mavc *a) { (void)a; return 0; }
+static int md_held(mdec_t *d) { return d->type == MD_TYPE_AAC ? d->aac_npts : d->type == MD_TYPE_AVC && d->avc ? mavc_held(d->avc) : 0; }
+static uint64_t md_idle_ns(mdec_t *d) { return d->type == MD_TYPE_AVC ? 500000000ull : 200000000ull; }   // a picture longer: a missing one shows, cut short it would restart the codec mid-stream
+static int md_aac_tail(mdec_t *d, int slot) {
+    if (!d->aac || !d->aac_npts) return 0;
+    if (d->out[slot].cap < MD_PCM_CAP) { free(d->out[slot].frm); d->out[slot].frm = malloc(MD_PCM_CAP); d->out[slot].cap = MD_PCM_CAP; }
+    size_t n = dm_aac_tail(d->aac, d->out[slot].frm, (size_t)d->aac_fpp * 2 * d->ch);   // one packet's worth, as md_aac hands out
+    d->out[slot].bytes = n; d->jpts_out = d->aac_pts[0];
+    memmove(d->aac_pts, d->aac_pts + 1, (size_t)--d->aac_npts * sizeof *d->aac_pts);
+    if (!n) d->aac_npts = 0;   // nothing more in the codec
+    return n > 0;
+}
 // The H.264 decoder, made by Configure (when the stream's parameter sets come with it) or by the first packet; RGBA pictures in the native texture mode either way.
 // Absolum's movies bring csd-0 / csd-1 to Configure, and a decoder made there used to stay NV12: the frames' bytes went into the RGBA texture as they were
 static void md_avc_open(mdec_t *d) { if (!d->avc) { d->avc = mavc_new(); if (d->fmt == MD_FMT_ABGR) mavc_set_rgba(d->avc); } }
@@ -405,7 +423,8 @@ static void *md_worker(void *arg) {
         while (d->job == MDJ_NONE) pthread_cond_wait(&d->wcv, &d->wmu);
         int job = d->job;
         pthread_mutex_unlock(&d->wmu);
-        if (job == MDJ_DECODE || job == MDJ_TAKE) {
+        if (job == MDJ_TAIL) d->jgot = d->type == MD_TYPE_AVC ? md_avc(d, NULL, 0, d->jslot, 1) : md_aac_tail(d, d->jslot);
+        else if (job == MDJ_DECODE || job == MDJ_TAKE) {
             uint64_t t0 = now_ns();
             d->jgot = d->type == MD_TYPE_AVC ? md_avc(d, d->jp, d->jn, d->jslot, job == MDJ_TAKE) : d->type == MD_TYPE_VORBIS ? md_vorbis(d, d->jp, d->jn, d->jslot) :
                       d->type == MD_TYPE_AAC ? md_aac(d, d->jp, d->jn, d->jslot) : md_vp9(d, d->jp, d->jn, d->jslot);
@@ -654,7 +673,8 @@ HLE_FORCE("_ZN5movie7Decoder24SendInputBufferForDecodeEiiilj", "movie decoder: s
         static int once; if (!once++) LOG("[movie] input index %d sent after a flush returned it: claimed from the free list (first case)", i);
         break;
     }
-    d->inown[i] = d->instale[i] = 0;
+    d->inown[i] = d->instale[i] = 0; d->in_ns = now_ns();
+    if (md_held(d)) md_defer_at(d, 1, d->in_ns + md_idle_ns(d) + 50000000ull);   // Unity waits for the output event: one comes if no packet follows (md_tail)
     if (flags & 4) d->in_eos = 1;   // the last input until Flush / Stop (h_movie_AcqIn)
     for (int k = 0; k < d->npend; k++) if (d->pend[k].in == i) { pthread_mutex_unlock(&d->mu); if (!d->red_dec++) LOG("[RED] movie: input index %d sent twice, the second packet is dropped (first case)", i); return 0x100b; }
     if (d->npend == MD_NIN) { pthread_mutex_unlock(&d->mu); if (!d->red_dec++) LOG("[RED] movie: more packets pending than input buffers, one dropped (first case)"); return 0x100b; }
@@ -670,6 +690,27 @@ HLE_FORCE("_ZN5movie7Decoder24SendInputBufferForDecodeEiiilj", "movie decoder: s
     return 0;
 }
 
+// A decoder still holding packets (AAC: their PCM in the converter; H.264: pictures in MediaCodec's pipeline) and none coming while the client asks for output: what it holds goes
+// out, one output per ask, without the end-of-stream flag (the client sent none; a packet that comes later opens the codec afresh). A client that waits for the output event (Unity) is
+// woken by a deferred one after the last packet (h_movie_SendIn), asked again until the decoder is idle long enough and once more per output
+static void md_tail(mdec_t *d) {
+    if (d->type != MD_TYPE_AAC && d->type != MD_TYPE_AVC) return;
+    pthread_mutex_lock(&d->dmu); pthread_mutex_lock(&d->mu);
+    int s = -1, held = d->started && !d->in_eos && !d->npend && !d->noutq && !d->avc_drain && md_held(d);
+    uint64_t idle = md_idle_ns(d);
+    if (held && now_ns() - d->in_ns <= idle) md_defer_at(d, 1, d->in_ns + idle + 50000000ull);   // too early: ask again once no packet came for long enough
+    else if (held) for (int k = 0; k < d->nout; k++) if (!d->out[k].used) { s = k; break; }
+    if (s < 0) { pthread_mutex_unlock(&d->mu); pthread_mutex_unlock(&d->dmu); return; }
+    d->out[s].used = 1; pthread_mutex_unlock(&d->mu);
+    d->jslot = s; d->jflush = 1; md_job(d, MDJ_TAIL); int got = d->jgot, more = md_held(d);
+    pthread_mutex_lock(&d->mu);
+    if (got) { d->out[s].pic = 1; d->out[s].pts = d->jpts_out; d->out[s].flags = 0; d->outq[d->noutq++] = s; } else d->out[s].used = 0;
+    pthread_mutex_unlock(&d->mu); pthread_mutex_unlock(&d->dmu);
+    if (!got) return;
+    static int once[2]; if (!once[d->type == MD_TYPE_AVC]++) LOG("[movie] %s: no packet for %llu ms, what the decoder still held goes out (first case)", d->type == MD_TYPE_AVC ? "H.264" : "AAC", (unsigned long long)(idle / 1000000));
+    md_event(d, 1);
+    if (more) md_defer(d, 1);
+}
 HLE_FORCE("_ZN5movie7Decoder24AcquireOutputBufferIndexEPiPlPjS1_", "movie decoder: acquire a ready output index", int, h_movie_AcqOut,
           void **self, int *idx, int64_t *pts, uint32_t *flags, int *left) {
     mdec_t *d = md_of(self); if (!d) return 0x1000;
@@ -682,6 +723,7 @@ HLE_FORCE("_ZN5movie7Decoder24AcquireOutputBufferIndexEPiPlPjS1_", "movie decode
     }
     pthread_mutex_unlock(&d->mu);
     if (!r) MD_TRACE(d, 8, "AcquireOutputBufferIndex → index %d time %lld flags %#x left %d", *idx, (long long)*pts, *flags, *left);
+    else md_tail(d);
     return r;
 }
 static void md_format(mdec_t *d, void *md) {
