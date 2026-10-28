@@ -55,11 +55,12 @@ Per-build knowledge stays where upstream keeps it: the rewriter's cuts in `patch
 |---|---|---|
 | inputs | Find the base game, updates and DLC (NSP / XCI), match the profile, pick the version; check the game folder's drive has room (about twice the game files, less an earlier port's build folder) | |
 | extract | `nx_extract` (built with the .NET SDK) | `extract/<version>/{ExeFS,RomFS}`, `aoc/` |
+| 60 fps | Only with `--fps60` (below): the profile's own cap, or the build's FPSLocker-Warehouse config converted for the host | `android/fpslock/{fpslock.tsv,patches.py,<build ID>.yaml}` |
 | rewrite | `patch_nso.py` with `DM_TARGET=android` | `android/patched_<version>/` |
 | shaders | `shader_split.py` (the DLC's own shaders too, `aoc/` given as `DM_SPLIT_AOC`), then `shader_vk.py` (SPIR-V) with the translator built from the repository's source (`dm/gfx/tools/dmsh_xlate` over `dm/third_party/ryujinx`, once per player in their nx2android folder), plus the shaders captured on the device (below) | `shader/pkg`, `android/shaders.dmsv`, `android/captured_shaders/` |
 | host | `dm/android/build.py --release` with the player's NDK (`--debug`: a development build, debug information and `DM_CTL`) | `android/host/libdmhost.so` (`android/host-debug/`) |
 | apk | `dm/android/apk/mkapk.py`, signed with the player's own key | `<out>/<App>.apk` |
-| data | The files the app reads from `/sdcard/Android/data/<package>/files` | `<out>/<App>-data/{mods,RomFS,aoc,shaders.dmsv,env.txt,settings.txt,nx2a-data.json}` |
+| data | The files the app reads from `/sdcard/Android/data/<package>/files` | `<out>/<App>-data/{mods,RomFS,aoc,shaders.dmsv,env.txt,settings.txt,nx2a-data.json}` (+ `fpslock.tsv` with `--fps60`) |
 | install | `adb install`, the profile's `requires` checked against the device, the data pack pushed (optional) | |
 
 RomFS in the data pack is hard-linked to the extraction when the volume allows it, so it takes no extra space.
@@ -75,6 +76,8 @@ What the port refuses: a game whose `main` renders with Vulkan or OpenGL (the An
 **Experimental ports** (`--experimental`, the GUI's Experimental box): a game without an Android profile. With no profile at all, upstream's survey (`<game folder>/<title ID>_survey/survey.md`) guesses a provisional one; with only an iOS profile, that profile is copied. Either way it goes to `<title ID>_build/profile/<title ID>/` with an `android.tsv` of status `experimental`, and every tool finds it there (`DM_GAMES_DIR`). That folder is where a bring-up starts; a game that works gets its profile into `nxnative/dm/games/`.
 
 `--package` installs a port under another package than the profile's, beside the player's other build of the game (a test).
+
+**60 fps** (`--fps60`). A Switch game capped at 30 needs per-build knowledge to run at 60: which memory holds its frame limit, or which code counts frames. A profile that has it (`fps_target`: the rewriter's frame-step stubs or `hle_fpslock.c`'s rows) gets `DM_FPS_TARGET=60` in `env.txt`. Otherwise the port fetches the community's config for the packed `main` build from masagrator's FPSLocker-Warehouse (`porter/fpslocker.py`; GitHub, `SaltySD/plugins/FPSLocker/patches/<title ID>/<build ID>.yaml`) and converts it: the `ALL_FPS` memory writes (pointer chains from `main`, compares; the expressions evaluated for 30 and 60) become `fpslock.tsv` in the data pack, which `hle_fpslock.c` writes on every present (`DM_FPS_LOCKS`); `MASTER_WRITE` bytes become cuts for the rewriter (`patch_nso.py` `DM_PATCHES_EXTRA`, original bytes from the game's `main`); presents follow the display (`DM_PRESENT_INTERVAL=display`), as FPSLocker paces them itself. A config using what the host lacks (`asm_a64`, `DECLARATIONS`, non-`MAIN` regions, `refresh_rate`) is refused whole, and the game keeps its own frame rate; 1,160 of the 1,462 configs convert (2026-10-28). The warehouse has no license, so its configs are fetched per port and never committed. Whether 60 holds on a device, and whether the config fixes every speed issue, is the config's and the device's: it is the player's choice.
 
 Events: with `--progress json`, every line on stdout is one JSON object, the protocol of upstream's NSP script: `stage`, `step`, `progress`, `stage_end`, `say`; `porter` adds `result` (the outputs) at the end. A line starting `[RED] ` in a `say` is an error or warning.
 

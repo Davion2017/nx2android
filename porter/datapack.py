@@ -33,8 +33,9 @@ def link_tree(src, dst):   # (files, bytes)
 def files_folder(package): return f'/sdcard/Android/data/{package}/files'
 
 
-def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, language='en-US', package=None, progress=None):
-    """Write the pack to dst (replacing it). profile: the AndroidProfile; package: the app's, when not the profile's. Returns the manifest"""
+def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, language='en-US', package=None, env=(), files=None, progress=None):
+    """Write the pack to dst (replacing it). profile: the AndroidProfile; package: the app's, when not the profile's; env: more env.txt rows, after the profile's;
+    files: {name in the pack: source} (the 60 fps memory writes, fpslock.tsv). Returns the manifest"""
     package = package or profile.package
     tmp = dst.with_name(dst.name + '.partial')
     if tmp.exists(): shutil.rmtree(tmp)
@@ -45,11 +46,12 @@ def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, 
         if progress: progress(what)
         dn, db = link_tree(src, tmp / sub); n += dn; b += db
     link_or_copy(shaders, tmp / 'shaders.dmsv'); n += 1; b += shaders.stat().st_size
-    env = [f'# Written by nx2android\'s porter for {profile.name} ({profile.id}); KEY=VALUE per line, read by the app at launch',
-           f'DM_LANG={language}']
-    if aoc: env.append(f'DM_AOC_DIR={files_folder(package)}/aoc')
-    env += profile.env
-    (tmp / 'env.txt').write_text('\n'.join(env) + '\n', encoding='utf-8', newline='\n')
+    for name, src in (files or {}).items(): shutil.copyfile(src, tmp / name); n += 1; b += Path(src).stat().st_size
+    rows = [f'# Written by nx2android\'s porter for {profile.name} ({profile.id}); KEY=VALUE per line, read by the app at launch',
+            f'DM_LANG={language}']
+    if aoc: rows.append(f'DM_AOC_DIR={files_folder(package)}/aoc')
+    rows += profile.env + list(env)
+    (tmp / 'env.txt').write_text('\n'.join(rows) + '\n', encoding='utf-8', newline='\n')
     if profile.settings: (tmp / 'settings.txt').write_text(''.join(f'{k}={v}\n' for k, v in profile.settings.items()), encoding='utf-8', newline='\n')
     man = dict(title_id=profile.id, name=profile.name, package=package, version=version, display=display, language=language, requires=profile.requires,
                files=n, bytes=b, dlc=sorted(int(p.name) for p in aoc.iterdir() if p.is_dir() and p.name.isdigit()) if aoc else [], made=time.strftime('%Y-%m-%d %H:%M:%S'))

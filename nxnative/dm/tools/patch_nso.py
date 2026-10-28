@@ -66,13 +66,19 @@ else:
 #   OBS = {build ID: [(offset, number, original instruction word, reason)]}: observation gates. Numbers match OBS_* in the host's hle.h; the original instruction must be position
 #     independent (no PC-relative / branch / anything involving x18 or tpidr), asserted offline; when the host has no callback attached the gate block goes in and out once and returns
 #   FRAME_STEP = {build ID: function(ctx)}: the frame step stubs of a main ("Frame step in whole vsyncs" below)
+#   DM_PATCHES_EXTRA (os.pathsep-separated files outside the repository): CUTS only, added after the registered ones of the same build (an Android port's 60 fps code bytes from a
+#     FPSLocker config, porter/fpslocker.py); an overlap with a registered cut fails that cut's original-bytes assert
 PATCH_FILES = [os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sdk_patches.py')] + sorted(glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../games/*/patches.py')))
+EXTRA_PATCH_FILES = [p for p in os.environ.get('DM_PATCHES_EXTRA', '').split(os.pathsep) if p]
 def load_patches():
     tables, where = {'CUTS': {}, 'OBS': {}, 'FRAME_STEP': {}}, {}
-    for n, path in enumerate(PATCH_FILES):
+    for n, path in enumerate(PATCH_FILES + EXTRA_PATCH_FILES):
         spec = importlib.util.spec_from_file_location(f'patches_{n}', path); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        extra = path in EXTRA_PATCH_FILES
+        assert not extra or not getattr(m, 'OBS', None) and not getattr(m, 'FRAME_STEP', None), f'{path}: DM_PATCHES_EXTRA files hold CUTS only'
         for kind, table in tables.items():
             for bid, v in getattr(m, kind, {}).items():
+                if extra: table[bid] = list(table.get(bid, [])) + list(v); continue
                 assert bid not in table, f'{kind} of build {bid} in both {where[kind, bid]} and {path}'
                 table[bid], where[kind, bid] = v, path
     return tables, where

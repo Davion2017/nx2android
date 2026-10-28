@@ -814,7 +814,8 @@ def rewrite(py, repo, exe_dir, out, env, logs, g):
     src = {m: exe_dir / m for m in mods} | nros
     names = list(src)
     kf = out.with_name(out.name + '.key')
-    key = fingerprint(('files', [repo / 'dm/tools' / f for f in ('patch_nso.py', 'nso_code.py', 'nso_asm.py')] + patch_files(repo, exe_dir, mods) + list(src.values()) + ([manifest] if manifest.is_file() else [])), names, capstone.__version__,
+    extra = [Path(p) for p in env.get('DM_PATCHES_EXTRA', '').split(os.pathsep) if p]   # cuts from outside the repository (patch_nso.py DM_PATCHES_EXTRA: an Android port's 60 fps code bytes)
+    key = fingerprint(('files', [repo / 'dm/tools' / f for f in ('patch_nso.py', 'nso_code.py', 'nso_asm.py')] + patch_files(repo, exe_dir, mods) + extra + list(src.values()) + ([manifest] if manifest.is_file() else [])), names, capstone.__version__,
                       {k: env.get(k) for k in ('DM_PATCH_FRONT',)})
     if all((out / f'{m}.patched.bin').is_file() for m in names) and reused(kf, key) is not None:
         PROG.end(f'{", ".join(mods)}{f" and {len(nros)} NROs" if nros else ""}, reused (inputs unchanged)'); return

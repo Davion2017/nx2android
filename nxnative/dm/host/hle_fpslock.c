@@ -1,6 +1,7 @@
 // Engine frame limits kept in game memory (FPSLocker's evaluate_write entries): some engines cap their own frame rate with a value the host can raise. The target is the profile's
 // fps_target (DM_FPS_TARGET overrides; 0 = leave the game's own limit), the same key that drives Tears of the Kingdom's frame step (loader.c install_fps_state). Called on every present
-// (hle_nvn.c); the game sets the values after boot and may set them again, so each is written whenever it differs. Fixed addresses: each row runs only on the main build it was found in (AGENTS.md)
+// (hle_nvn.c); the game sets the values after boot and may set them again, so each is written whenever it differs. Fixed addresses: each row runs only on the main build it was found in (AGENTS.md).
+// A port can also bring rows of its own from a FPSLocker config of its main build (DM_FPS_LOCKS, "Imported rows" below)
 #include "hle.h"
 #include <mach/mach.h>
 
@@ -50,19 +51,113 @@ static const struct { const char *build, *what; uint64_t ptr_off; uint32_t field
 
 static int rd(uint64_t a, void *out, size_t n) { vm_size_t got = 0; return a >= 0x1000 && vm_read_overwrite(mach_task_self(), (vm_address_t)a, n, (vm_address_t)out, &got) == KERN_SUCCESS && got == n; }
 
+// Imported rows (DM_FPS_LOCKS: fpslock.tsv in an Android port's data pack, written by porter/fpslocker.py): the memory writes of the community's FPSLocker config of this main
+// build (masagrator's FPSLocker-Warehouse, its ALL_FPS entries), whose expressions the porter evaluated for 30 and 60. A row: the value type, main offsets (all but the last name
+// a pointer), the values at 30 and at 60 (consecutive copies), and a compare that must hold for the write (type, offsets, operator, value; "-" = always). As FPSLocker does, every
+// row is written on every present whatever the field holds (when it differs: no plausibility window, the configs are made for that); a pointer that is 0 or unreadable skips the
+// row this time. The rows above win for their builds
+enum { T_I8, T_I16, T_I32, T_I64, T_U8, T_U16, T_U32, T_U64, T_F32, T_F64, T_N };
+static const char *const k_tname[T_N] = {"int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "float", "double"};
+static const uint8_t k_tsize[T_N] = {1, 2, 4, 8, 1, 2, 4, 8, 4, 8};
+enum { IMP_MAX = 64, IMP_CHAIN = 8, IMP_COPIES = 16 };
+typedef struct { int n; int64_t off[IMP_CHAIN]; } imp_chain;
+static struct { char what[32]; uint8_t type, ncopy, ctype, cop; imp_chain a, c; uint64_t v[2][IMP_COPIES], cv; } g_imp[IMP_MAX];   // v[0]: at 30 fps, v[1]: at 60; cop 0 = no compare
+static int g_nimp;
+static int imp_type(const char *s) { for (int t = 0; t < T_N; t++) if (!strcmp(s, k_tname[t])) return t; return -1; }
+static int imp_chain_parse(char *s, imp_chain *c) {   // "0x7a642d8" or "0x1ba1a90,0x80,-0x4"
+    c->n = 0;
+    for (char *tok; c->n < IMP_CHAIN && (tok = strsep(&s, ",")); ) { char *end; c->off[c->n++] = strtoll(tok, &end, 0); if (end == tok || *end) return 0; }
+    return c->n > 0 && !s;
+}
+static int imp_value(const char *s, int t, uint64_t *bits) {   // one number of type t as its bits, zero-extended
+    char *end; *bits = 0;
+    if (t == T_F32) { float f = strtof(s, &end); memcpy(bits, &f, 4); }
+    else if (t == T_F64) { double d = strtod(s, &end); memcpy(bits, &d, 8); }
+    else { uint64_t v = t >= T_U8 ? strtoull(s, &end, 0) : (uint64_t)strtoll(s, &end, 0); *bits = k_tsize[t] == 8 ? v : v & ((1ull << 8 * k_tsize[t]) - 1); }
+    return end != s && !*end;
+}
+static int imp_values(char *s, int t, uint64_t *out) {   // "1,1": the copies; their count, 0 when malformed
+    int n = 0;
+    for (char *tok; (tok = strsep(&s, ",")); ) { if (n == IMP_COPIES || !imp_value(tok, t, &out[n])) return 0; n++; }
+    return n;
+}
+static void imp_load(const char *build) {
+    const char *path = getenv("DM_FPS_LOCKS"); if (!path || !*path) return;
+    FILE *f = fopen(path, "r"); if (!f) { LOG("[RED] DM_FPS_LOCKS=%s: cannot open it; the game keeps its frame limit", path); return; }
+    char line[1024]; int ln = 0, ok = 0;
+    while (fgets(line, sizeof line, f)) {
+        ln++; line[strcspn(line, "\r\n")] = 0;
+        if (!line[0] || line[0] == '#') continue;
+        if (!strncmp(line, "build\t", 6)) { if (!(ok = !strcmp(line + 6, build))) { LOG("[RED] %s: rows for main build %s, the game's is %s; not used", path, line + 6, build); break; } continue; }
+        if (!ok) { LOG("[RED] %s:%d: a row before the build line; not used", path, ln); break; }
+        if (g_nimp == IMP_MAX) { LOG("[RED] %s: more than %d rows; the rest left out", path, IMP_MAX); break; }
+        char *s = line, *fld[6]; int nf = 0;
+        while (nf < 6 && (fld[nf] = strsep(&s, "\t"))) nf++;
+        typeof(g_imp[0]) *r = &g_imp[g_nimp]; memset(r, 0, sizeof *r);
+        int t = nf == 6 && !s ? imp_type(fld[1]) : -1, n30 = 0, n60 = 0;
+        if (t >= 0) { r->type = (uint8_t)t; n30 = imp_values(fld[3], t, r->v[0]); n60 = imp_values(fld[4], t, r->v[1]); }
+        int good = t >= 0 && imp_chain_parse(fld[2], &r->a) && n30 && n30 == n60;
+        if (good && strcmp(fld[5], "-")) {   // "<type> <offsets> <operator> <value>"
+            static const char *const ops[] = {"<", "<=", ">", ">=", "==", "!="}; char *c = fld[5], *ct = strsep(&c, " "), *co = strsep(&c, " "), *op = strsep(&c, " "), *cv = c;
+            int ctp = ct ? imp_type(ct) : -1; good = ctp >= 0 && co && op && cv && imp_chain_parse(co, &r->c) && imp_value(cv, ctp, &r->cv);
+            if (good) { r->ctype = (uint8_t)ctp; for (int k = 0; k < 6; k++) if (!strcmp(op, ops[k])) r->cop = (uint8_t)(k + 1); good = r->cop != 0; }
+        }
+        if (!good) { LOG("[RED] %s:%d: not a row of type, offsets, values at 30 and 60, compare; left out", path, ln); continue; }
+        r->ncopy = (uint8_t)n30; snprintf(r->what, sizeof r->what, "%s", fld[0]); g_nimp++;
+    }
+    fclose(f);
+    if (g_nimp) LOG("main: %d frame limit write(s) from %s (FPSLocker-Warehouse config)", g_nimp, path);
+}
+static uint64_t imp_addr(uint8_t *base, const imp_chain *c) {   // main + off[0], then through each pointer; 0 = a pointer not there yet
+    uint64_t a = (uint64_t)(uintptr_t)base + (uint64_t)c->off[0];
+    for (int k = 1; k < c->n; k++) { uint64_t p; if (!rd(a, &p, sizeof p) || !p) return 0; a = p + (uint64_t)c->off[k]; }
+    return a;
+}
+static int imp_holds(uint8_t *base, int i) {
+    typeof(g_imp[0]) *r = &g_imp[i]; if (!r->cop) return 1;
+    uint64_t a = imp_addr(base, &r->c), bits = 0; int t = r->ctype;
+    if (!a || !rd(a, &bits, k_tsize[t])) return 0;
+    int cmp;   // the field against the value, by the type's order
+    if (t == T_F32 || t == T_F64) { double x, y; if (t == T_F32) { float fx, fy; memcpy(&fx, &bits, 4); memcpy(&fy, &r->cv, 4); x = fx; y = fy; } else { memcpy(&x, &bits, 8); memcpy(&y, &r->cv, 8); } cmp = x < y ? -1 : x > y; }
+    else if (t >= T_U8) cmp = bits < r->cv ? -1 : bits > r->cv;
+    else { int sh = 64 - 8 * k_tsize[t]; int64_t x = (int64_t)(bits << sh) >> sh, y = (int64_t)(r->cv << sh) >> sh; cmp = x < y ? -1 : x > y; }
+    switch (r->cop) { case 1: return cmp < 0; case 2: return cmp <= 0; case 3: return cmp > 0; case 4: return cmp >= 0; case 5: return cmp == 0; default: return cmp != 0; }
+}
+static void imp_tick(uint8_t *base, int target) {
+    static int nlog[IMP_MAX];
+    for (int i = 0; i < g_nimp; i++) {
+        typeof(g_imp[0]) *r = &g_imp[i]; int sz = k_tsize[r->type];
+        if (!imp_holds(base, i)) continue;
+        uint64_t a = imp_addr(base, &r->a); if (!a) continue;
+        for (int c = 0; c < r->ncopy; c++) {
+            uint64_t cur = 0, want = r->v[target == 60][c]; uint8_t *p = (uint8_t *)(uintptr_t)(a + (uint64_t)c * (uint64_t)sz);
+            if (!rd((uint64_t)(uintptr_t)p, &cur, (size_t)sz)) break;
+            if (cur == want) continue;
+            dm_guest_write_prepare(p, (size_t)sz); memcpy(p, &want, (size_t)sz);
+            if (nlog[i] < 8) { nlog[i]++; LOG("main: %s (%s at %#llx%s) %#llx → %#llx (%d fps)", r->what, k_tname[r->type], (unsigned long long)(a - (uint64_t)(uintptr_t)base),
+                                              r->a.n > 1 ? " through pointers" : "", (unsigned long long)cur, (unsigned long long)want, target); }
+        }
+    }
+}
+
 void dm_fps_lock_tick(void) {
     static int state = -2, rows[NLOCKS], nrow, nlog[NLOCKS], target; static uint8_t *base; static const char *src;
     if (state == -1) return;
     if (state == -2) {
         state = -1;
-        for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main"))
+        for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) {
             for (int k = 0; k < NLOCKS; k++) if (!strcmp(g_mod[i].build_id, k_locks[k].build)) { rows[nrow++] = k; base = g_mod[i].base; }
-        if (!nrow) return;
+            if (nrow && getenv("DM_FPS_LOCKS")) LOG("main: the host's own frame limit rows for this build; %s not used", getenv("DM_FPS_LOCKS"));
+            else if (!nrow) { imp_load(g_mod[i].build_id); if (g_nimp) base = g_mod[i].base; }
+        }
+        if (!nrow && !g_nimp) return;
         const char *e = getenv("DM_FPS_TARGET"); int t = e ? atoi(e) : DM_GAME_FPS_TARGET; src = e ? "DM_FPS_TARGET" : "game profile fps_target";
         if (t != 0 && t != 30 && t != 60) { LOG("[RED] DM_FPS_TARGET=%s: must be 0, 30 or 60; leaving the game's frame limit", e); t = 0; }
-        if (!t) { for (int r = 0; r < nrow; r++) LOG("main: %s left as the game sets it (%s)", k_locks[rows[r]].what, src); return; }
+        if (!t) { for (int r = 0; r < nrow; r++) LOG("main: %s left as the game sets it (%s)", k_locks[rows[r]].what, src);
+                  if (g_nimp) LOG("main: %d FPSLocker write(s) left out (%s 0)", g_nimp, src); return; }
         target = t; state = 0;
     }
+    if (g_nimp) { imp_tick(base, target); return; }
     for (int r = 0; r < nrow; r++) {
         int k = rows[r]; uint64_t obj = (uint64_t)(uintptr_t)base;
         if (k_locks[k].ptr_off && (!rd((uint64_t)(uintptr_t)(base + k_locks[k].ptr_off), &obj, sizeof obj) || !obj)) continue;   // not created yet

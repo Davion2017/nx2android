@@ -7,7 +7,7 @@ import os, re, shutil, sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from porter import config, datapack, install, paths, profiles, toolchain
+from porter import config, datapack, fpslocker, install, paths, profiles, toolchain
 from porter.adb import Adb, AdbError
 from porter.paths import DM, NXNATIVE
 from porter.upstream import BuildError, PROG, android_profile, game, nacp, nsp, profile_guess, say
@@ -29,6 +29,7 @@ class Options:
     debug: bool = False                # a development build: debug information, debuggable, DM_CTL
     experimental: bool = False         # a game not ported to Android yet: a provisional profile from upstream's survey (or a copy of its iOS profile), status experimental
     package: str = ''                  # the app's package instead of the profile's (a test install beside another build of the game)
+    fps60: bool = False                # 60 fps: the profile's own frame-rate cap, else the build's FPSLocker-Warehouse config (porter/fpslocker.py)
     jobs: int = field(default_factory=lambda: os.cpu_count() or 8)
 
 
@@ -94,9 +95,10 @@ class Port:
         self.env = dict(os.environ, J=str(o.jobs), PYTHONIOENCODING='utf-8', PYTHONUTF8='1', DOTNET_CLI_TELEMETRY_OPTOUT='1')
 
         self.inputs()
-        PROG.plan(1 + len(self.versions) + bool(self.fam['dlc']) + 6 + bool(o.install))   # nx_extract, the versions, the DLC, rewrite / split / Vulkan shaders / host / APK / data, install
+        PROG.plan(1 + len(self.versions) + bool(self.fam['dlc']) + bool(o.fps60) + 6 + bool(o.install))   # nx_extract, the versions, the DLC, 60 fps, rewrite / split / Vulkan shaders / host / APK / data, install
         self.extract()
         self.check_graphics()
+        self.fps_unlock()
         self.rewrite()
         if o.install: self.pull_captures()
         self.shaders()
@@ -227,6 +229,36 @@ class Port:
         for k in ('glslc_capture', 'ue_decode', 'oodle_packs', 'ue_legacy'):
             if src[k][0]: raise BuildError(f'{self.app_name} needs a step that boots the game in the Mac host ({src[k][1]}), which a Windows port cannot run yet')
 
+    # ---- 60 fps (--fps60): the profile's own cap (fps_target: frame-step stubs or hle_fpslock.c's rows), else the community's FPSLocker config of the build ----
+    def fps_unlock(self):
+        self.fps_env, self.fps_files = [], {}
+        self.env.pop('DM_PATCHES_EXTRA', None)
+        if not self.o.fps60: return
+        PROG.stage('60 fps', step='the game profile')
+        if self.g.get('fps_target', '0') != '0':
+            self.fps_env = ['DM_FPS_TARGET=60']; PROG.end('the game profile\'s own frame-rate cap (fps_target), at 60'); return
+        img, bid = fpslocker.nso_image(self.game / 'ExeFS/main')
+        src = fpslocker.url(self.g.id, bid); d = self.aw / 'fpslock'; d.mkdir(exist_ok=True); cache = d / f'{bid[:16].upper()}.yaml'
+        PROG.set(step='fetching the FPSLocker-Warehouse config')
+        try: text = fpslocker.fetch(self.g.id, bid)
+        except OSError as e:
+            if not cache.is_file(): say(f'[RED] 60 fps: {src} could not be fetched ({e}): the game keeps its own frame rate'); PROG.end('not fetched: the game keeps its own frame rate'); return
+            text = cache.read_text(encoding='utf-8'); say(f'[RED] 60 fps: {src} could not be fetched ({e}): using the copy fetched before')
+        if text is None:
+            nsp.rmtree(cache); say(f'60 fps: FPSLocker-Warehouse has no config for main build {bid[:16].upper()}: the game keeps its own frame rate'); PROG.end('no config for this build'); return
+        cache.write_text(text, encoding='utf-8')
+        try: tsv, cuts = fpslocker.convert(text, img, bid, src)
+        except fpslocker.Refused as e: say(f'[RED] 60 fps: {src} cannot be applied ({e}): the game keeps its own frame rate'); PROG.end('config not applicable: the game keeps its own frame rate'); return
+        (d / 'fpslock.tsv').write_text(tsv, encoding='utf-8', newline='\n')
+        if cuts:   # code bytes: the rewriter's cuts, applied before it rewrites main (patch_nso.py DM_PATCHES_EXTRA; part of the rewrite's reuse key)
+            (d / 'patches.py').write_text(fpslocker.patches_py(bid, cuts, src), encoding='utf-8', newline='\n'); self.env['DM_PATCHES_EXTRA'] = str(d / 'patches.py')
+        # FPSLocker paces the presents for its target itself, whatever interval the game asks for, so its configs leave the game's interval alone: presents follow the display (present_interval display)
+        self.fps_env = ['DM_FPS_TARGET=60', f'DM_FPS_LOCKS={datapack.files_folder(self.package)}/fpslock.tsv', 'DM_PRESENT_INTERVAL=display']
+        self.fps_files = {'fpslock.tsv': d / 'fpslock.tsv'}
+        n = tsv.count('\n') - 3
+        say(f'60 fps: FPSLocker-Warehouse config {src}, by masagrator and contributors: {n} memory write(s)' + (f', {len(cuts)} code cut(s)' if cuts else ''))
+        PROG.end(f'{n} memory write(s)' + (f', {len(cuts)} code cut(s)' if cuts else ''))
+
     # ---- rewrite: patch_nso.py for the Android host's thread slots ----
     def rewrite(self):
         self.patched = self.aw / f'patched_{self.pkg_ver}'   # beside, not over, an iOS build's patched_<version>: the rewrite's reuse key does not include the target
@@ -327,7 +359,7 @@ class Port:
         PROG.stage('data pack', step='linking')
         dst = self.o.out / f'{app_stem(self.g, self.app_name)}-data'
         man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched, romfs=self.game / 'RomFS', shaders=self.dmsv,
-                             aoc=self.aoc, language=self.lang, package=self.package, progress=lambda what: PROG.set(step=f'linking {what}'))
+                             aoc=self.aoc, language=self.lang, package=self.package, env=self.fps_env, files=self.fps_files, progress=lambda what: PROG.set(step=f'linking {what}'))
         self.data_path = dst; self.result['data'] = str(dst)
         PROG.end(f'{man["files"]:,} files, {man["bytes"] / 2**30:.1f} GB')
 

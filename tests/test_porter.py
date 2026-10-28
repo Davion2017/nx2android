@@ -124,5 +124,54 @@ class Misc(unittest.TestCase):
         finally: shutil.disk_usage = real
 
 
+class FpsLocker(unittest.TestCase):   # porter/fpslocker.py: FPSLocker-Warehouse configs → the host's rows (hle_fpslock.c DM_FPS_LOCKS) and the rewriter's cuts
+    BID = 'd49165c05ead8ae140f189aa97934f39'
+    UNITY = ('ALL_FPS:\n  # Vsync\n  -\n    type: evaluate_write\n    address: [MAIN, 0x7A642D8]\n    value_type: int32\n    value: VSYNC_TARGET\n'
+             '  -\n    type: evaluate_write\n    address: [MAIN, 0x7A642E4]\n    value_type: float\n    value: "1 / FPS_LOCK_TARGET"\n')   # the shape of Viractal 1.4.5's config
+
+    def rows(self, text, image=b''):
+        from porter import fpslocker
+        tsv, cuts = fpslocker.convert(text, image, self.BID, 'test')
+        return [l.split('\t') for l in tsv.splitlines() if not l.startswith('#')], cuts
+
+    def test_unity_vsync_and_frame_time(self):   # 2 vsyncs / 1/30 s at 30; 1 vsync / 1/62 s at 60 (FPS_LOCK_TARGET is the target + 2 at the refresh rate)
+        rows, cuts = self.rows(self.UNITY)
+        self.assertEqual(rows[0], ['build', self.BID]); self.assertEqual(cuts, [])
+        self.assertEqual(rows[1][1:], ['int32', '0x7a642d8', '2', '1', '-'])
+        self.assertEqual(rows[2][1:3], ['float', '0x7a642e4']); self.assertAlmostEqual(float(rows[2][3]), 1 / 30); self.assertAlmostEqual(float(rows[2][4]), 1 / 62)
+
+    def test_expressions(self):
+        from porter.fpslocker import evaluate
+        self.assertEqual(evaluate('TruncDec(FRAMETIME_TARGET, 2)', 30), 33.33); self.assertEqual(evaluate('2^3', 60), 8)
+        self.assertEqual(evaluate('VSYNC_TARGET', 60), 1); self.assertEqual(evaluate('floor(FPS_TARGET / 7)', 60), 8)
+        with self.assertRaises(Exception): evaluate('__import__("os")', 60)
+
+    def test_pointers_lists_and_compares(self):
+        rows, _ = self.rows('ALL_FPS:\n  -\n    type: compare\n    compare_address: [MAIN, 0x10, 0x8]\n    compare_type: "!="\n    compare_value_type: int8\n    compare_value: 0\n'
+                            '    address: [MAIN, 0x20, 0x30, -4]\n    value_type: int32\n    value: [2, 2]\n  -\n    type: block\n    what: timing\n')
+        self.assertEqual(rows[1][1:], ['int32', '0x20,0x30,-0x4', '2,2', '2,2', 'int8 0x10,0x8 != 0'])
+        self.assertEqual(len(rows), 2)   # block timing is FPSLocker's own frame delay: dropped
+
+    def test_refused_whole(self):   # entries work together: one the host cannot apply refuses the config
+        from porter import fpslocker
+        for text in (self.UNITY + 'DECLARATIONS:\n  -\n    type: variable\n    name: x\n    value_type: float\n    default_value: 0\n',
+                     self.UNITY + 'MASTER_WRITE:\n  -\n    type: asm_a64\n    main_offset: 0x10\n    instructions: [[b.ne, :goto1], [nop], :goto1, [nop]]\n',   # labels parse
+                     'ALL_FPS:\n  -\n    type: write\n    address: [HEAP, 0x10]\n    value_type: int32\n    value: 1\n',
+                     'ALL_FPS:\n  -\n    type: compare\n    compare_address: [MAIN, 0x10]\n    compare_type: "=="\n    compare_value_type: int8\n    compare_value: 1\n    value_type: refresh_rate\n    value: 30\n',
+                     'ALL_FPS: [\n'):
+            with self.assertRaises(fpslocker.Refused): fpslocker.convert(text, b'', self.BID)
+
+    def test_master_write_bytes_are_cuts(self):   # the original bytes come from main's image, so the rewriter can assert them
+        image = bytes(range(256)) * 4
+        _, cuts = self.rows(self.UNITY + 'MASTER_WRITE:\n  -\n    type: bytes\n    main_offset: 0x10\n    value_type: uint8\n    value: [0x1F, 0x20, 0x03]\n', image)
+        self.assertEqual(cuts, [(0x10, '101112', '1f2003', 'FPSLocker-Warehouse MASTER_WRITE entry 1')])
+        from porter import fpslocker
+        ns = {}; exec(fpslocker.patches_py(self.BID, cuts), ns); self.assertEqual(ns['CUTS'][self.BID][0][:3], (0x10, '101112', '1f2003'))
+
+    def test_url(self):
+        from porter import fpslocker
+        self.assertTrue(fpslocker.url('0100fd501f95a000', self.BID).endswith('/patches/0100FD501F95A000/D49165C05EAD8AE1.yaml'))
+
+
 if __name__ == '__main__':
     unittest.main()
