@@ -219,7 +219,8 @@ int vk_pool_remap_ro(void *mem, size_t len) {
     int rc = -1;
     pthread_rwlock_rdlock(&g_pool_mu);
     for (int i = 0; i < g_npool; i++) {
-        vkpool_t *p = &g_pool[i]; if (!p->zero_copy || p->lo != (uint64_t)(uintptr_t)mem || p->hi - p->lo != len) continue;
+        vkpool_t *p = &g_pool[i]; if (p->lo != (uint64_t)(uintptr_t)mem || p->hi - p->lo != len) continue;
+        if (!p->zero_copy) { rc = p->shadow ? 0 : -1; break; }   // a copied pool: nothing to map again (its protection stays as it is), and done, so defrag stops taking its pages busy
         int sv[2], fds[16], nfd = -1; if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) break;
         if (!AHardwareBuffer_sendHandleToUnixSocket(p->ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
         close(sv[0]); close(sv[1]);
@@ -316,25 +317,26 @@ void vk_pools_sync(VkCommandBuffer cb) {
     for (int i = 0; i < g_npool; i++) {
         vkpool_t *p = &g_pool[i]; if (!p->shadow) continue;
         uint8_t *lo = (uint8_t *)(uintptr_t)p->lo; uint64_t size = p->hi - p->lo, st = nvn_dirty_now();
-        if (!p->span) p->span = nvn_dirty_span(lo, size);
+        if (!p->span && (p->span = nvn_dirty_span(lo, size))) p->synced = 0;   // tracked only now (nvnMemoryPoolInitialize registers the range after the pool): copied whole once more, protected
         if (!p->synced || !p->span) {   // untracked: every sync copies all of it, as before
             if (p->span) nvn_dirty_protect(lo, size);
-            memcpy(p->shadow, lo, size); g_sync_bytes += size; g_sync_full++; p->synced = 1; p->stamp = st; continue; }
+            memcpy(p->shadow, lo, size); g_sync_bytes += size; g_sync_full++; p->synced = 1; p->stamp0 = p->stamp = st; continue; }
+        // judged against the sync before the last: a write whose fault took its generation before the last sync's stamp but stored it after that sync looked
+        // at its block would otherwise never count (its page is writable from then on, and clean by every later stamp). A dirty block is copied twice
         for (uint64_t off = 0; off < size; off += BLK) {
             uint64_t n = size - off < BLK ? size - off : BLK;
-            if (!nvn_dirty_since_span(p->span, lo + off, n, p->stamp)) continue;
+            if (!nvn_dirty_since_span(p->span, lo + off, n, p->stamp0)) continue;
             nvn_dirty_protect(lo + off, n); memcpy(p->shadow + off, lo + off, n); g_sync_bytes += n;
         }
-        p->stamp = st;
+        p->stamp0 = p->stamp; p->stamp = st;
     }
     pthread_rwlock_unlock(&g_pool_mu);
     static uint64_t n, last; if (++n % 600 == 0) { VKLOG("copied pools: %.1f MB synced in the last 600 submissions (%.2f MB each), %llu full copies so far", (g_sync_bytes - last) / 1048576.0, (g_sync_bytes - last) / 600.0 / 1048576.0, (unsigned long long)g_sync_full); last = g_sync_bytes; }
 }
-static void pools_copy_back(void) {   // copied pools after a submission: what the GPU wrote back into the guest's pages (not for CPU-uncached pools, see vk_pool_set_flags)
-    pthread_rwlock_rdlock(&g_pool_mu);
-    for (int i = 0; i < g_npool; i++) if (g_pool[i].shadow && !(g_pool[i].flags & 0x2)) memcpy((void *)(uintptr_t)g_pool[i].lo, g_pool[i].shadow, g_pool[i].hi - g_pool[i].lo);
-    pthread_rwlock_unlock(&g_pool_mu);
-}
+// Copied pools after a submission: what the GPU wrote, back into the guest's pages. A pool never synced yet is left alone (its copy holds nothing of the game's).
+// A CPU-uncached pool (vk_pool_set_flags) takes back only the ranges the submission's GPU writes covered (sub_gpu_wrote):
+// copying 860 MB back after every submission held Unicorn Overlord to a few frames a second
+struct vksub; static void pools_copy_back(const struct vksub *s);
 
 // ---------------- submission slots ----------------
 #define NSLOT 6
@@ -363,8 +365,18 @@ struct vksub {
     uint32_t dp_used[9], dp_sets; int dp_counted; int no_ts;   // what pool dp_cur has given out (vk_alloc_set)
     dfree_t *df; int ndf, capdf;
     post_op *post; int npost, cappost;
+    struct { uint64_t lo, hi; } gw[64]; int ngw;   // GPU writes into pool memory in this submission (sub_gpu_wrote), for pools_copy_back: nearby ones merged, and once full each joins the nearest
 };
+enum { GW_SUB = 64 };
 static vksub_t g_slot[NSLOT]; static int g_cur = -1; uint64_t g_cmd_gen;   // g_cmd_gen: main command buffers begun (gfx_vk_exec.c bind cache)
+static void pools_copy_back(const struct vksub *s) {
+    pthread_rwlock_rdlock(&g_pool_mu);
+    for (int i = 0; i < g_npool; i++) { vkpool_t *p = &g_pool[i]; if (!p->shadow || !p->synced) continue;
+        if (!(p->flags & 0x2)) { memcpy((void *)(uintptr_t)p->lo, p->shadow, p->hi - p->lo); continue; }
+        for (int k = 0; k < s->ngw; k++) { uint64_t lo = s->gw[k].lo > p->lo ? s->gw[k].lo : p->lo, hi = s->gw[k].hi < p->hi ? s->gw[k].hi : p->hi;
+            if (lo < hi) memcpy((void *)(uintptr_t)lo, p->shadow + (lo - p->lo), hi - lo); } }
+    pthread_rwlock_unlock(&g_pool_mu);
+}
 static VkCommandBuffer g_slot_main_cb(void) { return g_slot[g_cur].main; }
 // DM_VK_PASS_TIMES=1: a timestamp before and after every render pass (the replay's per-frame line then lists the passes that cost the most GPU time)
 enum { PASSQ = 128 };   // passes timed per submission
@@ -603,7 +615,7 @@ void mtl_sub_begin(void) {
     // for the one before to finish on the GPU, which kept the replay of a frame from overlapping the GPU work of the last)
     static int next; g_cur = next; next = (next + 1) % NSLOT; vksub_t *s = &g_slot[g_cur];
     slot_recycle(s);
-    s->npost = 0; s->up_used = 0;
+    s->npost = 0; s->up_used = 0; s->ngw = 0;
     VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     s->main = s->mains[0]; s->nmain_used = 1; s->cb_err = 0; s->up = s->ups[0]; s->nup_used = 1; s->nmain_sent = 0;
     VKCHK(vkBeginCommandBuffer(s->main, &bi)); g_cmd_gen++;
@@ -611,7 +623,7 @@ void mtl_sub_begin(void) {
     // parts early; synced at the commit, those parts read the copy as the last submission left it), and only once no earlier submission still reads it
     pthread_rwlock_rdlock(&g_pool_mu); int shadow = 0; for (int i = 0; i < g_npool; i++) shadow |= g_pool[i].shadow != NULL; pthread_rwlock_unlock(&g_pool_mu);
     g_shadow_pools = shadow;
-    if (shadow) { wait_fence(g_fence); vk_pools_sync(NULL); }
+    if (shadow) { mtl_wait(g_fence, ~0ull); vk_pools_sync(NULL); }   // (after the completion thread's copy-back of the last submission, not only its GPU work)
     if (g_tsq) { vkCmdResetQueryPool(s->main, g_tsq, 2 * (uint32_t)g_cur, 2); vkCmdWriteTimestamp(s->main, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, g_tsq, 2 * (uint32_t)g_cur); }
     if (g_cq) vkCmdResetQueryPool(s->main, g_cq, (uint32_t)g_cur * CQ, CQ);
     s->ncq = 0;
@@ -700,6 +712,7 @@ static void infl_prune(void) {
     for (int i = 0; i < g_ninfl; i++) if (g_infl[i].fence > done) g_infl[o++] = g_infl[i];
     g_ninfl = o;
 }
+static void sub_gpu_wrote(uint64_t a, uint64_t n);
 void vk_ubd_land(VkCommandBuffer cb) {   // outside a render pass
     if (!g_nubd) return;
     infl_prune();
@@ -710,7 +723,7 @@ void vk_ubd_land(VkCommandBuffer cb) {   // outside a render pass
     }
     vk_img_barrier_all(cb);
     for (int i = 0; i < g_nubd; i++) { VkBuffer db; VkDeviceSize dof; if (vk_buf_at(g_ubd[i].lo, g_ubd[i].hi - g_ubd[i].lo, &db, &dof)) {
-        VkBufferCopy r = {g_ubd[i].so, dof, g_ubd[i].hi - g_ubd[i].lo}; vkCmdCopyBuffer(cb, g_ubd[i].sb, db, 1, &r); } }
+        VkBufferCopy r = {g_ubd[i].so, dof, g_ubd[i].hi - g_ubd[i].lo}; vkCmdCopyBuffer(cb, g_ubd[i].sb, db, 1, &r); sub_gpu_wrote(g_ubd[i].lo, g_ubd[i].hi - g_ubd[i].lo); } }
     vk_img_barrier_all(cb);
     g_ubd_landed += (uint64_t)g_nubd; g_nubd = 0; g_ubd_gen++;
 }
@@ -719,12 +732,20 @@ int vk_ubd_overlaps(uint64_t a, uint64_t n) { for (int i = 0; i < g_nubd; i++) i
 // until it has, a CPU read of that memory (vk_ubd_read: a shadow, a handle in a uniform buffer) may see the bytes from before them or after them
 typedef struct { uint64_t lo, hi, fence; } gpuw_t; enum { GW_MAX = 1024 };
 static gpuw_t g_gw[GW_MAX]; static int g_ngw; uint64_t g_ubd_racy;
+static void sub_gpu_wrote(uint64_t a, uint64_t n) {   // into the open submission's list (pools_copy_back)
+    if (g_cur < 0 || !n) return;
+    vksub_t *s = &g_slot[g_cur]; uint64_t lo = a, hi = a + n, bd = ~0ull; int best = -1;
+    for (int k = 0; k < s->ngw; k++) { uint64_t d = lo > s->gw[k].hi ? lo - s->gw[k].hi : s->gw[k].lo > hi ? s->gw[k].lo - hi : 0; if (d < bd) { bd = d; best = k; } }
+    if (best >= 0 && (bd <= 65536 || s->ngw == GW_SUB)) { if (lo < s->gw[best].lo) s->gw[best].lo = lo; if (hi > s->gw[best].hi) s->gw[best].hi = hi; }
+    else { s->gw[s->ngw].lo = lo; s->gw[s->ngw].hi = hi; s->ngw++; }
+}
 void vk_gpu_wrote(uint64_t a, uint64_t n) {
     uint64_t f = g_fence + 1;
     for (int i = g_ngw - 1; i >= 0 && g_gw[i].fence == f; i--) if (g_gw[i].lo <= a && a + n <= g_gw[i].hi) return;
     if (g_ngw == GW_MAX) { uint64_t done = vk_fence_done(); int o = 0; for (int i = 0; i < g_ngw; i++) if (g_gw[i].fence > done) g_gw[o++] = g_gw[i]; g_ngw = o; }
     if (g_ngw == GW_MAX) { memmove(g_gw, g_gw + 1, sizeof *g_gw * (GW_MAX - 1)); g_ngw--; }
     g_gw[g_ngw++] = (gpuw_t){a, a + n, f};
+    sub_gpu_wrote(a, n);
 }
 int vk_gpu_pending(uint64_t a, uint64_t n) {
     if (!g_ngw) return 0;
@@ -777,7 +798,7 @@ static void *completion_main(void *a) {
         while (!g_ch) pthread_cond_wait(&g_ccv, &g_cmu);
         cpend *c = g_ch; pthread_mutex_unlock(&g_cmu);
         wait_fence(c->fence);
-        if (g_shadow_pools) pools_copy_back();
+        if (g_shadow_pools && c->rslot >= 0) pools_copy_back(&g_slot[c->rslot]);
         if (g_tsq && c->slot >= 0) { uint64_t t[2]; if (vkGetQueryPoolResults(V.dev, g_tsq, 2 * (uint32_t)c->slot, 2, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && t[1] > t[0])
             { uint64_t ns = (uint64_t)((double)(t[1] - t[0]) * V.props.limits.timestampPeriod); g_gpu_ns += ns; int k = (int)(c->frame % 64);
               if (g_frame_gpu_of[k] != c->frame + 1) { g_frame_gpu[k] = 0; g_frame_gpu_of[k] = c->frame + 1; } g_frame_gpu[k] += ns; } }
