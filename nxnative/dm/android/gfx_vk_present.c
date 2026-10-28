@@ -13,7 +13,40 @@
 #include "overlay_frag.spv.h"
 
 __attribute__((weak)) ANativeWindow *dm_front_window(void) { return NULL; }
-static uint64_t g_presents; static double g_pres_t[64];
+static uint64_t g_presents;
+// Vulkan present IDs include overlay redraws; only the game's tickets have a time for the NVN frame statistics.
+enum { PRES_TIMES = 64 };
+static struct { uint64_t ticket, ns; } g_pres_t[PRES_TIMES];
+static struct { uint32_t id; uint64_t ticket; } g_pres_ids[PRES_TIMES];
+static pthread_mutex_t g_pres_mu = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t g_pres_recorded;   // display times recorded so far (present_time_record): none after 240 presents with display timing on, the hand-over time stands in
+static void present_time_begin(uint64_t ticket, uint64_t ns) {   // ns: the time to report now (no display times on this device), or 0 for the display's
+    pthread_mutex_lock(&g_pres_mu);
+    g_pres_t[ticket % PRES_TIMES] = (typeof(g_pres_t[0])){ticket, ns};
+    pthread_mutex_unlock(&g_pres_mu);
+}
+static void present_time_map(uint32_t id, uint64_t ticket) {   // the present thread, under g_present_mu
+    g_pres_ids[id % PRES_TIMES] = (typeof(g_pres_ids[0])){id, ticket};
+}
+static void present_time_record(uint32_t id, uint64_t ns) {   // the present thread, under g_present_mu
+    typeof(g_pres_ids[0]) *m = &g_pres_ids[id % PRES_TIMES];
+    if (m->id != id || !m->ticket || !ns) return;
+    pthread_mutex_lock(&g_pres_mu);
+    typeof(g_pres_t[0]) *p = &g_pres_t[m->ticket % PRES_TIMES];
+    if (p->ticket == m->ticket) p->ns = ns;
+    pthread_mutex_unlock(&g_pres_mu); g_pres_recorded++;
+}
+static void present_time_reset(void) {   // the old swapchain's pending results cannot describe the new one
+    memset(g_pres_ids, 0, sizeof g_pres_ids);
+    pthread_mutex_lock(&g_pres_mu); memset(g_pres_t, 0, sizeof g_pres_t); pthread_mutex_unlock(&g_pres_mu);
+}
+static double present_time_get(uint64_t ticket) {
+    pthread_mutex_lock(&g_pres_mu);
+    typeof(g_pres_t[0]) *p = &g_pres_t[ticket % PRES_TIMES];
+    double t = ticket && p->ticket == ticket ? p->ns / 1e9 : 0;
+    pthread_mutex_unlock(&g_pres_mu);
+    return t;
+}
 static VkSurfaceKHR g_surf; static VkSwapchainKHR g_swap; static VkImage g_simg[8]; static uint32_t g_nsimg; static VkExtent2D g_sext; static VkFormat g_sfmt;
 static VkSemaphore g_acq[8], g_done_sem[8]; static VkFence g_pfence[8]; static VkCommandPool g_ppool; static VkCommandBuffer g_pcb[8]; static uint32_t g_pi;
 static ANativeWindow *g_win;
@@ -34,6 +67,7 @@ __attribute__((weak)) int dm_text_entry(char *title, int tcap, char *text, int x
 static void pace_reset(void); static void ov_fb_drop(void);
 static void swap_destroy(void) {
     pace_reset();
+    present_time_reset();
     if (g_swap) { vkDeviceWaitIdle(V.dev); ov_fb_drop(); for (uint32_t i = 0; i < g_nsimg; i++) if (g_sview[i]) { vkDestroyImageView(V.dev, g_sview[i], NULL); g_sview[i] = VK_NULL_HANDLE; }
                   vkDestroySwapchainKHR(V.dev, g_swap, NULL); g_swap = VK_NULL_HANDLE; }
     if (g_surf) { vkDestroySurfaceKHR(V.inst, g_surf, NULL); g_surf = VK_NULL_HANDLE; }
@@ -451,6 +485,7 @@ static uint64_t pace_desired(double period) {   // the frame's desired present t
     VkPastPresentationTimingGOOGLE pt[16]; uint32_t np = 16;
     if (vkGetPastPresentationTimingGOOGLE(V.dev, g_swap, &np, pt) >= 0)
         for (uint32_t i = 0; i < np; i++) {
+            present_time_record(pt[i].presentID, pt[i].actualPresentTime);
             if (pt[i].actualPresentTime > g_pace_anchor) g_pace_anchor = pt[i].actualPresentTime;
             if (pt[i].desiredPresentTime && pt[i].actualPresentTime > pt[i].desiredPresentTime + g_refresh_ns) g_pace_slip++;   // went out a vsync or more after its own
         }
@@ -467,7 +502,7 @@ static uint64_t pace_desired(double period) {   // the frame's desired present t
     g_pace_target = t;
     return t - g_refresh_ns / 2;
 }
-static void present_window(vkimg_t *im, const int crop[4], double period) {   // period: the game's frame period (s); < 0 for a redraw of the last frame (no time)
+static void present_window(vkimg_t *im, const int crop[4], double period, uint64_t ticket) {   // period: the game's frame period (s); < 0 for a redraw (ticket 0)
     uint32_t k = g_pi++ % 8;
     vkWaitForFences(V.dev, 1, &g_pfence[k], 1, UINT64_MAX);
     uint32_t idx; VkResult r = vkAcquireNextImageKHR(V.dev, g_swap, UINT64_MAX, g_acq[k], VK_NULL_HANDLE, &idx);
@@ -514,6 +549,7 @@ static void present_window(vkimg_t *im, const int crop[4], double period) {   //
     VkPresentTimesInfoGOOGLE pti = {VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, NULL, 1, &ptm};
     if (V.has_dtiming) pi.pNext = &pti;
     r = vkQueuePresentKHR(V.q, &pi);
+    if (V.has_dtiming && r >= 0) present_time_map(ptm.presentID, ticket);
     pthread_mutex_unlock(&g_vk_queue_mu);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) swap_destroy();
 }
@@ -568,12 +604,12 @@ static void *present_thread(void *arg) {
         atomic_store(&g_redraw, 0);
         if (g_pq_tail == g_pq_head) {   // a redraw, no new frame
             pthread_mutex_unlock(&g_pq_mu);
-            if (last.im) { pthread_mutex_lock(&g_present_mu); if (swap_make()) present_window(last.im, last.has_crop ? last.crop : NULL, -1); pthread_mutex_unlock(&g_present_mu); }
+            if (last.im) { pthread_mutex_lock(&g_present_mu); if (swap_make()) present_window(last.im, last.has_crop ? last.crop : NULL, -1, 0); pthread_mutex_unlock(&g_present_mu); }
             continue;
         }
         typeof(g_pq[0]) e = g_pq[g_pq_tail % PQ_N];
         pthread_mutex_unlock(&g_pq_mu);
-        if (e.im) { last = e; pthread_mutex_lock(&g_present_mu); if (swap_make()) present_window(e.im, e.has_crop ? e.crop : NULL, e.period); pthread_mutex_unlock(&g_present_mu); }
+        if (e.im) { last = e; pthread_mutex_lock(&g_present_mu); if (swap_make()) present_window(e.im, e.has_crop ? e.crop : NULL, e.period, e.n); pthread_mutex_unlock(&g_present_mu); }
         pthread_mutex_lock(&g_pq_mu); g_pq_tail++; g_pq_done = e.n; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu);
     }
     return NULL;
@@ -583,7 +619,7 @@ static uint64_t present_enqueue(vkimg_t *im, const int crop[4], uint64_t n, doub
     static int sync = -1; static pthread_once_t once = PTHREAD_ONCE_INIT;
     if (sync < 0) sync = getenv("DM_VK_SYNC_PRESENT") != NULL;
     if (sync || !dm_front_window()) {   // headless: nothing to show; or presenting on this thread
-        if (sync && im) { pthread_mutex_lock(&g_present_mu); if (swap_make()) present_window(im, crop, period); pthread_mutex_unlock(&g_present_mu); }
+        if (sync && im) { pthread_mutex_lock(&g_present_mu); if (swap_make()) present_window(im, crop, period, n); pthread_mutex_unlock(&g_present_mu); }
         pthread_mutex_lock(&g_pq_mu); if (g_pq_tail == g_pq_head) g_pq_done = n; pthread_mutex_unlock(&g_pq_mu);   // done at once (after any queued ones)
         return n;
     }
@@ -605,7 +641,9 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     static ANativeWindow *rate_win; static double rate_period;
     if (g_win && (g_win != rate_win || period != rate_period)) { rate_win = g_win; rate_period = period; dm_perf_window(g_win, period > 0 ? 1.0 / period : 60); }
     uint64_t n = ++g_presents;
-    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); g_pres_t[n % 64] = ts.tv_sec + ts.tv_nsec / 1e9;
+    // without display times (no VK_GOOGLE_display_timing, no window, or none came back) the hand-over time stands in, as before: the governor's late check needs readings
+    { int disp = V.has_dtiming && dm_front_window() && (n <= 240 || g_pres_recorded); struct timespec ts; if (!disp) clock_gettime(CLOCK_MONOTONIC, &ts);
+      present_time_begin(n, disp ? 0 : (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec); }
     vkimg_t *im = vk_tex(t);
     static uint64_t no_img, undrawn, shown;
     if (n % 600 == 0) {
@@ -640,7 +678,8 @@ void mtl_present_wait(uint64_t tk) {   // NVN acquire: the window texture's last
     while (g_pq_done < tk && pthread_cond_timedwait(&g_pq_cv, &g_pq_mu, &dl) == 0) {}
     pthread_mutex_unlock(&g_pq_mu);
 }
-double mtl_presented_time(uint64_t n) { return n && n <= g_presents && g_presents - n < 64 ? g_pres_t[n % 64] : 0; }
+double mtl_presented_time(uint64_t n) { return present_time_get(n); }
+double vk_refresh_ms(void) { return V.has_dtiming && g_pres_recorded && g_refresh_ns ? g_refresh_ns / 1e6 : 0; }   // perf_android.c's late check: the display's refresh, when display times are what it gets
 uint32_t mtl_present_qos(void) { return 0; }
 int mtl_link_active(void) { return 0; }
 int mtl_link_wait_tick(int vsyncs, uint64_t timeout_ns) { (void)vsyncs; (void)timeout_ns; return 0; }
