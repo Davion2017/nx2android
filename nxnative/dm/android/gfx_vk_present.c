@@ -31,10 +31,10 @@ __attribute__((weak)) int dm_menu_state(void) { return -1; }
 __attribute__((weak)) int dm_overlay_fps(void) { return 0; }   // front_android.c: the pause menu's Show FPS
 __attribute__((weak)) void dm_overlay_menu_xy(float *x, float *y) { *x = *y = 0; for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_MENU) { *x = OV_CTLS[i].x; *y = OV_CTLS[i].y; } }
 __attribute__((weak)) int dm_text_entry(char *title, int tcap, char *text, int xcap, int *sel, int *shift) { (void)title; (void)tcap; (void)text; (void)xcap; (void)sel; (void)shift; return 0; }
-static void pace_reset(void);
+static void pace_reset(void); static void ov_fb_drop(void);
 static void swap_destroy(void) {
     pace_reset();
-    if (g_swap) { vkDeviceWaitIdle(V.dev); for (uint32_t i = 0; i < g_nsimg; i++) if (g_sview[i]) { vkDestroyImageView(V.dev, g_sview[i], NULL); g_sview[i] = VK_NULL_HANDLE; }
+    if (g_swap) { vkDeviceWaitIdle(V.dev); ov_fb_drop(); for (uint32_t i = 0; i < g_nsimg; i++) if (g_sview[i]) { vkDestroyImageView(V.dev, g_sview[i], NULL); g_sview[i] = VK_NULL_HANDLE; }
                   vkDestroySwapchainKHR(V.dev, g_swap, NULL); g_swap = VK_NULL_HANDLE; }
     if (g_surf) { vkDestroySurfaceKHR(V.inst, g_surf, NULL); g_surf = VK_NULL_HANDLE; }
 }
@@ -98,10 +98,12 @@ static VkRenderPass ov_rp(void) {
     if (vkCreateRenderPass(V.dev, &ci, NULL, &g_ov.rp)) { VKRED_ONCE(93, "overlay render pass failed"); g_ov.rp = VK_NULL_HANDLE; }
     return g_ov.rp;
 }
+// every overlay framebuffer goes with the views or the pass it was made for: a view handle made again later may have the same value (ov_fb would take it for its own)
+static void ov_fb_drop(void) { for (int i = 0; i < 8; i++) { if (g_ov.fb[i]) vkDestroyFramebuffer(V.dev, g_ov.fb[i], NULL); g_ov.fb[i] = VK_NULL_HANDLE; g_ov.fbview[i] = VK_NULL_HANDLE; g_ov.fbext[i] = (VkExtent2D){0, 0}; } }
 static VkFramebuffer ov_fb(uint32_t idx) {
     if (idx >= 8 || !ov_rp()) return VK_NULL_HANDLE;
     if (g_ov.fb[idx] && g_ov.fbview[idx] == g_sview[idx] && g_ov.fbext[idx].width == g_sext.width && g_ov.fbext[idx].height == g_sext.height) return g_ov.fb[idx];
-    if (g_ov.fb[idx]) vkDestroyFramebuffer(V.dev, g_ov.fb[idx], NULL);   // its view was destroyed with the old swapchain, after vkDeviceWaitIdle (swap_destroy)
+    if (g_ov.fb[idx]) vkDestroyFramebuffer(V.dev, g_ov.fb[idx], NULL);   // (swap_destroy drops them all with the views; here only an extent change)
     VkFramebufferCreateInfo ci = {VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, NULL, 0, g_ov.rp, 1, &g_sview[idx], g_sext.width, g_sext.height, 1};
     if (vkCreateFramebuffer(V.dev, &ci, NULL, &g_ov.fb[idx])) { VKRED_ONCE(94, "overlay framebuffer failed"); g_ov.fb[idx] = VK_NULL_HANDLE; return VK_NULL_HANDLE; }
     g_ov.fbview[idx] = g_sview[idx]; g_ov.fbext[idx] = g_sext;
@@ -370,7 +372,7 @@ static int overlay_ready(VkCommandBuffer cb, uint32_t k, int menu) {   // k: thi
         VkPipelineColorBlendStateCreateInfo cbs = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, NULL, 0, 0, 0, 1, &ba};
         VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR}; VkPipelineDynamicStateCreateInfo dy = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, NULL, 0, 2, dyn};
         VkPipelineRenderingCreateInfo rci = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, NULL, 0, 1, &g_sfmt};
-        if (!V.has_dynrender && g_ov.rp) { vkDestroyRenderPass(V.dev, g_ov.rp, NULL); g_ov.rp = VK_NULL_HANDLE; }   // the pass follows the swapchain's format, as the pipeline does
+        if (!V.has_dynrender && g_ov.rp) { ov_fb_drop(); vkDestroyRenderPass(V.dev, g_ov.rp, NULL); g_ov.rp = VK_NULL_HANDLE; }   // the pass follows the swapchain's format, as the pipeline does
         VkRenderPass orp = V.has_dynrender ? VK_NULL_HANDLE : ov_rp();
         if (!V.has_dynrender && !orp) return 0;
         VkGraphicsPipelineCreateInfo ci = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, orp ? NULL : &rci, 0, 2, ss, &vi, &ia, NULL, &vs, &rs, &ms, NULL, &cbs, &dy, g_ov.layout, orp};
