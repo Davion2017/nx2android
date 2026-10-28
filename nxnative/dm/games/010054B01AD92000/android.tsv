@@ -1,7 +1,10 @@
 # Unicorn Overlord, Asian release, on Android: a first, untested port (the iOS / Mac profile beside it, unchanged). Vanillaware's textures are BC7.
 status	experimental
+tested	v262144 Lenovo Legion Y700 TB320FC (Snapdragon 8+ Gen 1, Adreno 730, Vulkan 1.1, Android 15)
 package	org.nx2a.unicornoverlordasia
 orientation	landscape
 requires	bcn
 # the 860 MB memory pool as a copied pool: the Legion Y700 2023's gralloc aborts allocating a hardware buffer that big
 env	DM_VK_ZEROCOPY_MAX_MB=512
+# handheld (720p) by default: docked 1080p took 34 ms of GPU a frame in battle on that device (about 22 fps), handheld 11-20 ms (the adaptive rate holds 40 fps)
+setting	docked=0
