@@ -24,7 +24,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Big Brain Academy: Brain vs. Brain · `0100620012D6E000` · profile here
 - [x] Blasphemous 2 · `010040801A4C8000`
 - [ ] Brain Memory Training Academy · `0100F5D01DA3A000` · profile here
-- [ ] Captain Toad: Treasure Tracker · `01009BF0072D4000` · profile here
+- [x] Captain Toad: Treasure Tracker · `01009BF0072D4000`
 - [ ] Catherine: Full Body · `0100BF00112C0000` · profile here
 - [x] Celeste · `01002B30028F6000`
 - [ ] Cult of the Lamb · `01002E7016C46000` · upstream profile · iPhone only, through Apple Arcade

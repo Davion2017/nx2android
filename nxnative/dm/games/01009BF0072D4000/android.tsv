@@ -8,8 +8,11 @@
 # recordings found no magenta block in any frame. The shader tables are the Windows split's.
 # A 30-minute soak in that course (walking and turning the camera): frame time p50 16.55 ms, p95 about 19.3 ms; about a quarter of the 300-frame windows dropped 1-3 frames;
 # footprint 654 MiB; one audio window with 7 underruns (35 ms), at startup, none after; no red log line.
-# Not tested yet: finishing the opening course (the route to the Power Star was not found by DM_CTL), so the book, saving and loading; the touch pointer; docked mode
-status	boots
+# Then the opening course finished (route: through the arch, the back walkway, the grass, the flower bed, the dark step block, the slab, the temple's steps), Wingo's cutscene,
+# the storybook and the title; the game saved (2 save commits) and after a restart it starts at the title with the save, and Episode 1's hub plays. Audio: one window of
+# 8 underruns (40 ms) at each startup, none in play.
+# Not tested yet: the courses after the hub, the touch pointer, docked mode
+status	playable
 tested	v393216 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.captaintoadtreasuretracker
 orientation	landscape

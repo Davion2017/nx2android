@@ -5,7 +5,7 @@ Tested on a Lenovo Legion Y700 (Snapdragon 8 Elite, Adreno 830). The device's GP
 | | |
 |:---:|:---:|
 | ![13 Sentinels: Aegis Rim](images/13-sentinels.jpg)<br>13 Sentinels: Aegis Rim<br><sub>update 1.10 · 60 fps</sub> | ![Advance Wars 1+2: Re-Boot Camp](images/advance-wars-1-2-re-boot-camp.jpg)<br>Advance Wars 1+2: Re-Boot Camp<br><sub>base game 1.0.0 · 60 fps (30 in battle on Switch)</sub> |
-| ![Blasphemous 2](images/blasphemous-2.jpg)<br>Blasphemous 2<br><sub>update 1.0.8 · 60 fps</sub> | ![Captain Toad: Treasure Tracker](images/captain-toad-treasure-tracker.jpg)<br>Captain Toad: Treasure Tracker<br><sub>update 1.4.2 · 60 fps · **boots**: the opening course not finished, so saving not tested yet</sub> |
+| ![Blasphemous 2](images/blasphemous-2.jpg)<br>Blasphemous 2<br><sub>update 1.0.8 · 60 fps</sub> | ![Captain Toad: Treasure Tracker](images/captain-toad-treasure-tracker.jpg)<br>Captain Toad: Treasure Tracker<br><sub>update 1.4.2 · 60 fps</sub> |
 | ![Celeste](images/celeste.jpg)<br>Celeste<br><sub>update 1.4.1.1 · 60 fps</sub> | ![Donkey Kong Country Returns HD](images/donkey-kong-country-returns-hd.jpg)<br>Donkey Kong Country Returns HD<br><sub>update 1.1.0 · 60 fps</sub> |
 | ![Graveyard Keeper 2](images/graveyard-keeper-2.jpg)<br>Graveyard Keeper 2<br><sub>update 1.0.4 · 60 fps (30 on Switch)</sub> | ![Hades II](images/hades-ii.jpg)<br>Hades II<br><sub>update 1.0 · 60 fps</sub> |
 | ![Hollow Knight: Silksong](images/hollow-knight-silksong.jpg)<br>Hollow Knight: Silksong<br><sub>update 1.0.30000 · 60 fps</sub> | ![Mario vs. Donkey Kong](images/mario-vs-donkey-kong.jpg)<br>Mario vs. Donkey Kong<br><sub>update 1.0.1 · 60 fps</sub> |
