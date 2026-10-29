@@ -39,28 +39,78 @@ class AndroidProfiles(unittest.TestCase):
         self.assertEqual(android_profile.load(d.name).settings, {'fps': '1'})
         with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('setting', 'fps=2')]).name)
 
+    def test_opacity_setting(self):   # the gamepad's opacity, 20..80 percent by 5 (the menu's slider, overlay_layout.h OV_OPACITY_MIN..MAX)
+        self.assertEqual(android_profile.load(profile_dir([('status', 'boots'), ('setting', 'opacity=45')]).name).settings, {'opacity': '45'})
+        for v in ('10', '85', '42'):
+            with self.assertRaises(android_profile.ProfileError, msg=v): android_profile.load(profile_dir([('status', 'boots'), ('setting', f'opacity={v}')]).name)
+
     def test_default_package(self):
         d = profile_dir([('status', 'boots')])
         self.assertEqual(android_profile.load(d.name).package, 'org.nx2a.t0100000000aaa000')
 
     def test_bad_keys_are_refused(self):
-        for rows in ([('status', 'great')], [('colour', 'red')], [('setting', 'volume=3')], [('overlay', 'q 0.1 0.2')], [('env', 'lower=1')], [('package', 'Not A Package')],
+        for rows in ([('status', 'great')], [('colour', 'red')], [('setting', 'volume=3')], [('overlay', 'tablet q 0.1 0.2')], [('env', 'lower=1')], [('package', 'Not A Package')],
                      [('status', 'boots'), ('status', 'playable')]):
             d = profile_dir(rows)
             with self.assertRaises(android_profile.ProfileError, msg=rows): android_profile.load(d.name)
 
-    def test_header_default_layout(self):   # the generated table is overlay_layout.h's table as it was written by hand before it moved to overlay_default.tsv
+    def test_header_default_layout(self):   # the ergonomic layouts (the themes' design), the tablet's then the phone's, the same controls in each
         h = android_profile.header(android_profile.load(NEO))
-        rows = re.findall(r'\{(OV_\w+), ([\d.]+)f, ([\d.]+)f, ([\d.]+)f, (\w+), "([^"]*)"\}', h)
-        self.assertEqual(len(rows), 16)
-        self.assertEqual(rows[0], ('OV_STICK_L', '0.12', '0.70', '0.12', '0', ''))
-        self.assertEqual(rows[2], ('OV_BUTTON', '0.935', '0.60', '0.050', 'DM_BTN_A', 'A'))
-        self.assertEqual(rows[10][-1], '-')   # the minus button's label, not "no label"
+        rx = r'\{(OV_\w+), (-?[\d.]+)f, (-?[\d.]+)f, ([\d.]+)f, ([\d.]+)f, ([\d.]+)f, (\w+), "([^"]*)", "(\w+)"\}'
+        tablet, phone = (re.findall(rx, h.split(f'#define DM_AOV_{n}')[1].split('#define')[0]) for n in ('TABLET', 'PHONE'))
+        self.assertEqual((len(tablet), len(phone)), (16, 16)); self.assertIn('#define DM_AOV_N 16', h)
+        self.assertEqual([r[0] for r in tablet], [r[0] for r in phone]); self.assertEqual([r[6] for r in tablet], [r[6] for r in phone])
+        self.assertEqual(tablet[0], ('OV_STICK_L', '0.0', '0.2105', '0.5789', '0.2421', '0.2421', '0', '', 'stick_l'))   # 184 px of the 1216x760 design, 160 px from the left edge
+        a = next(r for r in tablet if r[6] == 'DM_BTN_A'); self.assertEqual(a[1:3], ('1.0', '-0.1421'))   # from the right edge
+        self.assertEqual(next(r for r in tablet if r[6] == 'DM_BTN_MINUS')[-2], '-')   # the minus button's label, not "no label"
 
-    def test_header_overlay_move(self):
-        d = profile_dir([('status', 'boots'), ('overlay', 'a 0.5 0.5 0.07')])
+    def test_header_overlay_move(self):   # a moved control: x and y fractions of the window, in the one layout named
+        d = profile_dir([('status', 'boots'), ('overlay', 'phone a 0.5 0.5')])
         h = android_profile.header(android_profile.load(d.name))
-        self.assertIn('{OV_BUTTON, 0.5f, 0.5f, 0.07f, DM_BTN_A, "A"}', h)
+        self.assertIn('{OV_BUTTON, 0.5f, 0.0f, 0.5f, 0.1456f, 0.1456f, DM_BTN_A, "A", "a"}', h.split('#define DM_AOV_PHONE')[1])
+        self.assertNotIn('0.5f, 0.0f, 0.5f', h.split('#define DM_AOV_PHONE')[0])
+        with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('overlay', 'a 0.5 0.5')]).name)
+
+    def test_theme_mapping(self):   # porter packs the game's own pack, the ergo pack for a game the table does not name
+        self.assertEqual(android_profile.theme(NEO).name, 'neotwewy'); self.assertEqual(android_profile.theme(NEO.lower()).name, 'neotwewy')
+        self.assertEqual(android_profile.theme('0100000000AAA000').name, 'ergo')
+        rows = [l.split('\t') for l in (android_profile.THEMES / 'themes.tsv').read_text(encoding='utf-8').splitlines() if l and not l.startswith('#')]
+        self.assertEqual(len({r[0] for r in rows}), len(rows))   # one pack per game
+        for r in rows: self.assertRegex(r[0], r'^0100[0-9A-F]{12}$'); self.assertTrue((android_profile.THEMES / r[1] / 'theme.tsv').is_file(), r)
+
+    def test_theme_packs(self):   # every pack: both layouts' atlases, and sprites only of the layout's controls, within the atlas, every control drawn idle (a button held too)
+        from PIL import Image
+        names = {r['name'] for r in android_profile.default_layout()}
+        for pack in sorted(p for p in android_profile.THEMES.iterdir() if p.is_dir()):
+            rows = [l.split('\t') for l in (pack / 'theme.tsv').read_text(encoding='utf-8').splitlines() if l and not l.startswith('#')]
+            lays = {r[1]: r for r in rows if r[0] == 'layout'}
+            self.assertEqual(set(lays), set(android_profile.LAYOUTS), pack.name)
+            for lay, row in lays.items():
+                im = Image.open(pack / row[4]); self.assertIn(im.mode, ('P', 'RGBA'), pack.name)   # what overlay_theme.c decodes
+                sp = [r for r in rows if r[0] == 'sprite' and r[1] == lay]
+                for r in sp:
+                    self.assertIn(r[2], names, r); self.assertIn(r[4], ('idle', 'held', 'knob', 'decor'), r)
+                    x, y, w, h = map(int, r[5:9]); self.assertTrue(x >= 0 and y >= 0 and x + w <= im.width and y + h <= im.height, (pack.name, r))
+                drawn = {(r[2], r[3], r[4]) for r in sp}
+                for n in names - {'dpad'}:
+                    self.assertIn((n, '-', 'idle'), drawn, (pack.name, lay, n))
+                    if n not in ('stick_l', 'stick_r'): self.assertIn((n, '-', 'held'), drawn, (pack.name, lay, n))
+                for d in ('up', 'down', 'left', 'right'): self.assertTrue({('dpad', d, 'idle'), ('dpad', d, 'held')} <= drawn, (pack.name, lay, d))
+                self.assertTrue({('stick_l', '-', 'knob'), ('stick_r', '-', 'knob')} <= drawn, (pack.name, lay))
+
+    def test_apk_assets(self):   # mkapk.py --asset: the theme's files as assets/overlay/<name>, nothing of the other packs
+        t = Path(tempfile.mkdtemp(prefix='nx2a_test_apk_'))
+        try:
+            so = t / 'libdmhost.so'; so.write_bytes(b'\x7fELF' + b'\0' * 60); pack = android_profile.theme(NEO)
+            args = [a for f in ('theme.tsv', 'tablet.png', 'phone.png') for a in ('--asset', f'overlay/{f}={pack / f}')]
+            import subprocess, zipfile
+            subprocess.run([sys.executable, str(REPO / 'nxnative/dm/android/apk/mkapk.py'), str(so), str(t / 'a.apk'), str(t / 'k.json'), '--lib', 'dmhost'] + args,
+                           check=True, capture_output=True)
+            with zipfile.ZipFile(t / 'a.apk') as z:
+                self.assertEqual(sorted(n for n in z.namelist() if n.startswith('assets/')), ['assets/overlay/phone.png', 'assets/overlay/tablet.png', 'assets/overlay/theme.tsv'])
+                self.assertEqual(z.read('assets/overlay/tablet.png'), (pack / 'tablet.png').read_bytes())
+        finally:
+            shutil.rmtree(t, ignore_errors=True)
 
 
 class DataPack(unittest.TestCase):
