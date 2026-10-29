@@ -9,6 +9,7 @@ _p = _ap.ArgumentParser(); _p.add_argument('so'); _p.add_argument('out'); _p.add
 _p.add_argument('--label', default='NX2A Probe'); _p.add_argument('--lib', default='probe'); _p.add_argument('--landscape', action='store_true')
 _p.add_argument('--extra-so', action='append', default=[], help='another arm64 library packed beside the main one (a Vulkan validation layer)')
 _p.add_argument('--icon', help='launcher icon (a PNG, used at its own size: nodpi)')
+_p.add_argument('--asset', action='append', default=[], metavar='NAME=FILE', help='a file the app reads with AAssetManager as NAME (assets/NAME in the APK): the gamepad theme')
 _p.add_argument('--release', action='store_true', help='not debuggable')
 _p.add_argument('--version-code', type=int, default=1, help='versionCode: a later port of the game must have a higher one to install over it')
 _p.add_argument('--version-name', default='1.0', help='versionName: the version the player sees (the game\'s display version)'); ARGS = _p.parse_args()
@@ -198,6 +199,7 @@ def main():
         print(f'new signing key {keyf} ({time.time() - t:.1f} s)')
     entries = [('AndroidManifest.xml', axml(MANIFEST), 4), (f'lib/arm64-v8a/lib{LIB}.so', open(so, 'rb').read(), 16384)]
     entries += [(f'lib/arm64-v8a/{os.path.basename(x)}', open(x, 'rb').read(), 16384) for x in ARGS.extra_so]
+    entries += [(f'assets/{n}', open(f, 'rb').read(), 4) for n, _, f in (x.partition('=') for x in ARGS.asset)]   # stored, as every entry: AAsset reads them in place
     if ARGS.icon: entries += [('resources.arsc', res_table('res/drawable-nodpi-v4/icon.png'), 4), ('res/drawable-nodpi-v4/icon.png', open(ARGS.icon, 'rb').read(), 4)]
     z, cd, eocd = build_zip(entries)
     apk = sign_v2(z, cd, eocd, k, crt)
