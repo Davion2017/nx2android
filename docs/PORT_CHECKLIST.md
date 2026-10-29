@@ -43,7 +43,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Graveyard Keeper 2 · `0100005027A18000`
 - [ ] Hades · `0100535012974000` · profile here · iPhone only, through Netflix
 - [x] Hades II · `0100A00019DE0000`
-- [ ] Hollow Knight: Silksong · `010013C00E930000` · profile here
+- [x] Hollow Knight: Silksong · `010013C00E930000`
 - [ ] Hyrule Warriors: Age of Calamity · `01002B00111A2000` · profile here · 60 fps with 1.3.0
 - [ ] Kirby and the Forgotten Land · `01004D300C5AE000` · upstream profile
 - [ ] Luigi's Mansion 3 · `0100DCA0064A6000` · profile here · 60 fps with 1.4.0
