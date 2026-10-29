@@ -26,7 +26,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Brain Memory Training Academy · `0100F5D01DA3A000` · profile here
 - [ ] Captain Toad: Treasure Tracker · `01009BF0072D4000` · profile here
 - [ ] Catherine: Full Body · `0100BF00112C0000` · profile here
-- [ ] Celeste · `01002B30028F6000` · profile here
+- [x] Celeste · `01002B30028F6000`
 - [ ] Cult of the Lamb · `01002E7016C46000` · upstream profile · iPhone only, through Apple Arcade
 - [ ] Cuphead · `0100A5C00D162000` · profile here
 - [ ] DARK SOULS: REMASTERED · `01004AB00A260000` · profile here · 60 fps with 1.0.3
