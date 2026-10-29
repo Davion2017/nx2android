@@ -53,7 +53,8 @@ Per-build knowledge stays where upstream keeps it: the rewriter's cuts in `patch
 
 | Stage | What | Output (in `<game folder>/<title ID>_build/`) |
 |---|---|---|
-| inputs | Find the base game, updates and DLC (NSP / XCI), match the profile, pick the version; check the game folder's drive has room (about twice the game files, less an earlier port's build folder) | |
+| inputs | Find the base game, updates and DLC (NSP / XCI / NSZ / XCZ), match the profile, pick the version; check the game folder's drive has room (about twice the game files, NSZ / XCZ counted decompressed and once more for their NSP, less an earlier port's build folder) | |
+| decompress | Only with NSZ / XCZ files that a stage below will read (a reused extraction reads none): each becomes an NSP (an XCZ: an NSP of its secure partition), its NCZs expanded and encrypted again with the keys their section tables carry, every NCA checked against its SHA-256 name (`porter/dumps.py`). Deleted once the DLC are extracted, or when the port fails | `tmp/dumps/` (temporary) |
 | extract | `nx_extract` (built with the .NET SDK) | `extract/<version>/{ExeFS,RomFS}`, `aoc/` |
 | 60 fps | Only with `--fps60` (below): the profile's own cap, or the build's FPSLocker-Warehouse config converted for the host | `android/fpslock/{fpslock.tsv,patches.py,<build ID>.yaml}` |
 | rewrite | `patch_nso.py` with `DM_TARGET=android` | `android/patched_<version>/` |
