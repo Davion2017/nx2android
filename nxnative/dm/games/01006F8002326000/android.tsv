@@ -1,0 +1,43 @@
+# Animal Crossing: New Horizons on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Nintendo EPD's engine (code name Park; sead / agl / gsys, NintendoWare G3d / Ui2d / Vfx2 / Fx2 / Atk / Font, Havok, Pia and NEX) on SDK 20.5.4, NVN.
+# Update 3.0.3 (v2228224) with its three DLC (indices 300, 301 and 1000, Happy Home Paradise among them), the build the profile registers.
+# Its clears are wrapped in render conditions (profile key render_cond), without which every frame came out black.
+# A version the profile does not register is the trap this game sets: on 2.0.6 (v1835008, packed from a derived profile) building an island hung in
+# SaveProc for over 20 minutes (25,800 SVCs in 1,435 s, most of them on one condvar) and Android killed the app for it. On the registered 3.0.3 the
+# same save commits in 26-33 ms. Nothing in the host changed between the two: the derived profile ran the game on code paths its build's knowledge
+# was never checked against.
+#
+# Checked on a Redmi K60 Pro (2026-10-29), two ports, both from the game files to a playable island:
+#   boot, the opening, a new island built from scratch (map, name, character), free play, saving and reading the save back after a restart. The
+#   save transaction is 26-33 ms (save.work swapped atomically into save, 10.2 MB of island data, 16 writes).
+#   In Simplified Chinese too (DM_LANG=zh-Hans): the title reads 无人岛移居套餐计划 and the twins introduce themselves as 粒狸 and 豆狸.
+#   No red line but one: BufferInitialize asks for 1 MB inside a 0xf5000 pool (hle_fs.c romfs_work_size, the AOC cache), which the game carries on
+#   without.
+#
+# Speed is the open problem, so the status stays wip. Thirty samples over the ten minutes of building an island (one every 20 s, DM_NVN_ASYNC=1):
+#   frame p50 33.5-47.2 ms (21-30 fps), GPU p50 23.9-37.0 ms, replay 14.2-20.1 ms, 2,849-5,186 draws, 0-15 of 64 frames late.
+# The replay never once exceeded the GPU, so it is not what to optimize here. The frame follows the draw count across scenes measured while
+# walking (2026-10-29):
+#   1,793 draws (walking south)   GPU 19.7 ms   replay 12.0 ms   frame 33.3 ms   30 fps
+#   4,054 draws (walking east)    GPU 25.8 ms   replay 17.5 ms   frame 33.4 ms   30 fps
+#   4,900 draws (standing)        GPU 27.5 ms   replay 19.9 ms   frame 36.3 ms   ~27 fps
+#   5,928 draws (into the trees)  GPU 39.0 ms   replay 22.6 ms   frame 49.7 ms   ~20 fps, 22 of 64 frames late
+# Indoors and in dialogue the GPU drops to 1.4-6 ms and the frame sits on the game's own 30 fps cap.
+# DM_PIN_REPLAY=prime moved the replay from cpu4 to cpu7 and took it from 21.6 to 17.9 ms with the p95 down (39.8 against 41.0-43.0 ms) and no
+# late frames, but the frame did not improve because the GPU is the floor. The cost is Adreno's tiled rendering against a game built for the
+# Switch's immediate-mode GPU, not a lack of compute. DM_VK_CB_DRAWS makes no difference with the replay asynchronous (measured: 0), and the
+# bandwidth switches (DM_VK_X_DEPTH / _COLOR / _NOBAR) changed nothing either, which is what says the draws themselves are the cost.
+# The game asks for 1920x1080 itself (nvnWindowBuilderSetTextures) and never calls GetDefaultDisplayResolution, so neither DM_OPMODE=0 nor a lower
+# render scale changes what it renders: a smaller target needs a stub in its own code, which no build has yet.
+status	wip
+tested	v2228224 Redmi K60 Pro (Snapdragon 8 Gen 2, Adreno 740, Android 16)
+package	org.nx2a.acnh
+orientation	landscape
+# NintendoWare's textures are BC-compressed in the RomFS
+requires	bcn
+# the replay on a thread of its own, so it overlaps the GPU (see the notes above)
+env	DM_NVN_ASYNC=1
+# the D-pad opens the tool ring and the right stick turns the camera, so the pad starts in the 3D layout (game.tsv pad_layout full is the iOS layout)
+setting	docked=1
+setting	overlay=1
+setting	rumble=1
