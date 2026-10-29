@@ -9,8 +9,9 @@
 # A 30-minute soak in the weapon room (walking both ways, jumping, swinging): frame time p50 16.7 ms, at most 1-3 frames of 300 dropped, footprint about 1.5 GB, address
 # regions up to +3.08 GB of the 4.38 GB alias region and flat, no audio underrun, no red log line. Outside it: the governor fell to 40 fps for about 5 s around the Veredicto
 # pickup's cinematic (game CPU work, GPU 1.4 ms), and the frames while loading the title and the first cinematic run long.
-# Not tested yet: a slot save at a Prie Dieu and loading it (the weapon room stays locked while its phantom training dummy is there, and DM_CTL found no way past it;
-# its attacks, map and pause menu work), the areas after it, the Mea Culpa DLC campaign, handheld mode (played docked)
+# Later the same day: the weapon confirmed at the room's circle opens the way; the user played on from the cave past the first Prie Dieu into the Faceless One boss
+# fight (18 save commits, frame time p50 16.7 ms, no audio underrun, no red log line), and after a restart the slot loads at that Prie Dieu with the sword and items.
+# Not tested yet: the areas after the first boss, the Mea Culpa DLC campaign, handheld mode (played docked)
 status	playable
 tested	v524288 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.blasphemous2
