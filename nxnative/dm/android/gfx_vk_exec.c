@@ -41,6 +41,8 @@ void mtl_set_origin_lower_left(int on) { g_lower_left = on; }
 // and the winding had to be inverted. DM_VK_FLIPY=0 brings the old way back
 #include <dlfcn.h>
 static int g_flipy;
+// Lower-left mode then stores the window image bottom-up (GL's rows), so the present flips it as nvn_mtl.m does (Celeste's MonoGame keeps NVN's default lower-left origin)
+int vk_window_bottom_up(void) { return g_lower_left && g_flipy; }
 static void state_reset(void) {
     memset(&S, 0, sizeof S);
     S.dnear = 0; S.dfar = 1;
