@@ -11,6 +11,8 @@
 # pickup's cinematic (game CPU work, GPU 1.4 ms), and the frames while loading the title and the first cinematic run long.
 # Later the same day: the weapon confirmed at the room's circle opens the way; the user played on from the cave past the first Prie Dieu into the Faceless One boss
 # fight (18 save commits, frame time p50 16.7 ms, no audio underrun, no red log line), and after a restart the slot loads at that Prie Dieu with the sword and items.
+# A trip to the Android home screen and back, in the menus and in play: input and menus as before (needed the focus fix in front_android.c / hle_oe.c). Room changes
+# recorded on screen: the picture holds only while the screen is black in the fade (about 0.5 s), no flickering frame.
 # Not tested yet: the areas after the first boss, the Mea Culpa DLC campaign, handheld mode (played docked)
 status	playable
 tested	v524288 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
