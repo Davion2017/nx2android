@@ -146,9 +146,13 @@ static uint8_t g_late[64]; static int g_nshown; static unsigned g_held_back;
 // moves a quarter refresh past it, so the same frames count as with the hand-over times before. A stricter period + half a refresh counted every one-vsync miss:
 // Unicorn Overlord's opening then showed 70-157 of 300 frames at 25 ms and stepped to 40 fps, where it had held 60 (about 50-54 fps on screen)
 __attribute__((weak)) double vk_refresh_ms(void) { return 0; }
+// A frame the game itself asked to hold longer (its present interval) is judged against that hold. Super Mario Bros. Wonder sets interval 2 for the frame after one
+// that ran long (its own controller, main+0xcfd24) and 1 again: 133 times in 50 s of its first level, and those 33.3 ms frames counted as late (29-36 of 64) stepped
+// the rate down to 40 fps, where the paced frames ran longer still in the game's own measure and it asked for interval 2 more often
+__attribute__((weak)) double dm_nvn_present_hold_ms(void) { return 0; }
 void dm_perf_present(double iv_ms) {
     if (iv_ms == 0) return;
-    double r = vk_refresh_ms(), lim = STEPS[g_step] / 1e6 * 1.5 + r / 4;
+    double r = vk_refresh_ms(), hold = dm_nvn_present_hold_ms(), per = STEPS[g_step] / 1e6, lim = (hold > per ? hold : per) * 1.5 + r / 4;
     g_late[g_nshown++ % 64] = iv_ms < 0 || iv_ms > lim;
 }
 static int shown_late(void) {   // of the last 64 frames on screen, how many missed the display; -1 without readings (a device that gives no present times)
