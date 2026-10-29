@@ -22,7 +22,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Bayonetta 2 · `01007960049A0000` · upstream profile
 - [ ] Bayonetta 3 · `01004A4010FEA000` · profile here
 - [ ] Big Brain Academy: Brain vs. Brain · `0100620012D6E000` · profile here
-- [ ] Blasphemous 2 · `010040801A4C8000` · upstream profile
+- [x] Blasphemous 2 · `010040801A4C8000`
 - [ ] Brain Memory Training Academy · `0100F5D01DA3A000` · profile here
 - [ ] Captain Toad: Treasure Tracker · `01009BF0072D4000` · profile here
 - [ ] Catherine: Full Body · `0100BF00112C0000` · profile here
